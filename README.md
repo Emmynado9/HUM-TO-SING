@@ -1,21 +1,28 @@
 # Hum-to-MIDI Music Sketchpad
 
-This repository contains the tested foundation of a local-first desktop application for songwriters who can hum ideas but may not play an instrument. The current recording and phrase-conversion screen makes the intended workflow clear:
+This repository contains the tested foundation of a local-first desktop application for songwriters who can hum ideas but may not play an instrument. The current recording, phrase-conversion, and piano-roll screen makes the intended workflow clear:
 
 **Hum → Edit → Play → Export**
 
 The app enumerates microphones, records one bounded vocal phrase, displays input level and source metadata, and plays the original recording for verification. During capture, the Pitch Lab estimates a single sung note and displays smoothed frequency, nearest note, cents deviation, and a periodicity-based voicing-quality measure. Unreliable input is labeled **No reliable pitch**.
 
-After Stop, a worker analyzes the saved phrase, retains the raw pitch/voicing frames, derives conservative monophonic note events, and shows pitch, onset, duration, and velocity in a table. A successful result can be exported as a local Standard MIDI File format 0. Original seconds are preserved; the current file uses 120 BPM and 480 ticks per quarter, with only nearest-tick rounding. Scale snapping, rhythmic quantization, piano-roll editing, synthesized MIDI playback, and chord recognition remain later work.
+After Stop, a worker analyzes the saved phrase, retains the raw pitch/voicing frames, derives conservative monophonic note events, and places an editable copy on a piano roll. A user can select, add, delete, move, and resize note blocks, then undo or redo each edit. Time and pitch zoom and both scroll directions are available. Optional rhythm snapping is off by default, so captured seconds remain unchanged unless the user chooses a timing interval.
 
-Recordings are limited to 30 seconds. They are never uploaded, logged, or written to a temporary file. Starting a completed new take replaces the previous take; closing the application releases the audio memory.
-MIDI is written only to the path the user chooses in the export dialog.
+The pitch guide covers all 12 root pitch classes with Major and Natural minor scales. Out-of-scale notes are muted, dashed, and labeled. **Magnet OFF** preserves canonical pitches. **Magnet ON** derives the nearest valid scale pitch for display and export without replacing the underlying pitch; switching it off reveals the canonical phrase again. Selecting a key does not transpose the melody, and rhythm snapping remains a separate time control.
+
+**Play melody** renders the current visible/export projection through a procedural soft-tone instrument and feeds it to the local audio output. Note boundaries are scheduled at output sample positions, while the UI timer only redraws the audio-clock playhead. Stop, restart, output-device changes, edits, key/Magnet changes, and app closure stop and destroy the playback sink. The instrument is repository-owned code and uses no soundfont, sample asset, model, API, or network resource. **Play original** remains a separate control for the captured voice.
+
+MIDI export reads the same projected notes heard by **Play melody** and writes a local Standard MIDI File format 0. The selectable project/export tempo maps preserved seconds to 480 ticks per quarter with nearest-tick resolution; it does not retime or rhythm-quantize notes. MIDI contains note and tempo instructions, not the original voice or built-in instrument audio.
+
+**Save project** atomically stores schema-versioned canonical notes, tempo, key/scale, Magnet state, and rhythm-snap setting. Project files explicitly omit original audio and raw detector frames. Loading clears any session recording so unrelated audio cannot be mistaken for project content. Open, new recording, and close protect unsaved changes. See [docs/project-files.md](docs/project-files.md).
+
+Recordings are limited to 30 seconds. They are never uploaded, logged, or written to a temporary file. Starting a completed new take replaces the previous take; closing the application releases audio memory. Project and MIDI files are written only to paths the user chooses.
 
 ## Requirements
 
 - A C++20 compiler
 - CMake 3.25 or newer
-- Qt 6.5 or newer, Core/Gui/Widgets/Concurrent/Multimedia development modules
+- Qt 6.5 or newer, Core/Gui/Widgets/Concurrent/Multimedia development modules, plus Qt Test when `BUILD_TESTING=ON`
 
 On Debian or Ubuntu, the normal installation is:
 
@@ -59,23 +66,46 @@ Replay a stored PCM 16-bit or IEEE-float 32-bit WAV fixture through the same det
 
 Optional positional settings are `frame-size hop-size gate-rms min-hz max-hz`; run with `--help` for the full form. Fixture analysis reads only the path supplied by the user and never uploads it.
 
-Create the current CPack archive scaffold with:
+Create the Debian 13 x86_64 evaluation package and portable archive with:
 
 ```sh
 cmake --build build/debug --target package
 ```
 
-The generated archive is a build artifact, not yet a distribution-ready installer: bundling Qt, code signing, platform permissions, and installer testing are later release tasks.
+Install the generated Debian package with:
+
+```sh
+sudo apt install ./build/debug/humtosing_0.1.0_amd64.deb
+HumToSing
+```
+
+The package dynamically links Debian's Qt runtime and declares those dependencies; it does not bundle Qt, FFmpeg, a model, or audio assets. The first dependency installation may require configured Debian repositories, but the installed application has no runtime cloud requirement. The package is unsigned and has not been exercised through a native installer UI on this cloud host. Windows and macOS packages are untested. Read the [quick start](docs/quick-start.md) and [manual beta script](docs/mvp-beta-checklist.md).
+
+## Piano-roll controls
+
+- Click a block to select it. Drag its body to change pitch and start time; drag its right edge to change duration.
+- Double-click empty grid space or choose **Add note** to create a half-second note. Choose **Delete** or press Delete/Backspace to remove the selection.
+- Use **Undo**/**Redo** or the platform-standard Ctrl/Cmd shortcuts. One completed drag is one history operation.
+- Use the Time zoom and Pitch zoom sliders. The scrollbars reveal later times and the full MIDI pitch range.
+- Leave **Rhythm snap** off to preserve captured timing. Enabling it rounds edited times to the displayed second interval; it never changes pitch.
+- Choose a root and Major or Natural minor to highlight the scale. This selection supplies guidance and does not transpose notes.
+- Toggle **Magnet ON** to show and export closest in-scale pitches. Toggle it off to return to canonical pitches. Equal-distance choices resolve downward; at MIDI 0, an unavailable lower candidate is skipped.
+- Hover over a block for its note name, MIDI number, onset, duration, and editing instructions.
+- Use **Play melody** for the built-in instrument and moving red playhead. Use **Play original** only to verify the captured voice.
+- Set **Export tempo** before saving/exporting. Tempo changes MIDI tick mapping and metadata; it does not quantize or stretch the melody.
+- **Save project** preserves editable notes and settings, but deliberately omits the session-only original audio.
+
+Overlapping notes remain independent events and are never silently deleted. The status line reports preserved overlaps. Same-pitch overlaps can be ambiguous in some MIDI receivers, so correct them manually when they are unintended.
 
 ## Repository map
 
-- `include/hum/core/` — UI-free audio, analysis, extraction, scale, MIDI, playback, and export contracts.
-- `src/core/` — tested recording state machine, YIN-style pitch diagnostic, note segmenter, Standard MIDI File writer, fixture WAV reader, MIDI timing/model, and scale primitives.
-- `src/app/` — Qt desktop shell, worker-based Pitch Lab and phrase conversion, microphone adapter, and playback adapter.
+- `include/hum/core/` — UI-free audio, analysis, extraction, scale, MIDI, synthesis, project, playback, and export contracts.
+- `src/core/` — tested recording state machine, YIN-style pitch diagnostic, note segmenter, transactional note editor, procedural preview renderer, versioned project codec, Standard MIDI File writer, fixture WAV reader, MIDI timing/model, and scale primitives.
+- `src/app/` — Qt desktop shell, editable piano roll and playhead, worker-based analysis/conversion/synthesis, atomic project store, microphone adapter, and separate original/melody playback adapters.
 - `src/tools/` — offline stored-WAV fixture replay utility.
-- `tests/` — deterministic pitch fixtures, fake-device recording tests, and core assertions; the GUI launch check is registered by CMake.
+- `tests/` — deterministic pitch fixtures, fake-device recording tests, note-editor tests, and offscreen piano-roll interaction and launch checks.
 - `docs/` — baseline, architecture decisions, recording/pitch contracts, manual checklists, MIDI contract, dependency review, and acceptance checklists.
 
-See [docs/pitch-lab.md](docs/pitch-lab.md) for detector behavior and [docs/note-extraction.md](docs/note-extraction.md) for segmentation, timing, velocity, cancellation, and MIDI rules. This build environment has no audio device, so live voice and end-to-end export behavior remain subject to the [phrase conversion checklist](docs/note-extraction-manual-checklist.md), [manual humming checklist](docs/pitch-lab-manual-checklist.md), and [microphone hardware checklist](docs/microphone-hardware-checklist.md).
+See [docs/pitch-lab.md](docs/pitch-lab.md) for detector behavior, [docs/note-extraction.md](docs/note-extraction.md) for segmentation and MIDI rules, [docs/piano-roll.md](docs/piano-roll.md) for the editor contract, [docs/scale-guidance.md](docs/scale-guidance.md) for exact Magnet semantics, and [docs/project-files.md](docs/project-files.md) for persistence. This build environment has no audio device or native display session, so use the [single-track beta script](docs/mvp-beta-checklist.md) before making hardware or DAW claims.
 
 The repository does not yet declare a license for its own source. Choose one before distributing the application or accepting outside contributions. Dependency terms are recorded in [docs/dependencies-and-licenses.md](docs/dependencies-and-licenses.md).

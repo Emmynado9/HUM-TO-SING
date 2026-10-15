@@ -15,10 +15,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_library(hum_core STATIC
     src/core/midi.cpp
     src/core/midi_file.cpp
+    src/core/note_editor.cpp
     src/core/note_extraction.cpp
     src/core/pitch.cpp
+    src/core/project_file.cpp
     src/core/recording.cpp
     src/core/scale.cpp
+    src/core/simple_synth.cpp
     src/core/wave_fixture.cpp
 )
 add_library(HumToSing::core ALIAS hum_core)
@@ -60,14 +63,53 @@ if(BUILD_TESTING)
     target_link_libraries(hum_note_extraction_tests PRIVATE HumToSing::core)
     add_test(NAME hum_note_extraction_tests COMMAND hum_note_extraction_tests)
     set_tests_properties(hum_note_extraction_tests PROPERTIES LABELS "core;note-extraction;midi")
+
+    add_executable(hum_note_editor_tests tests/note_editor_tests.cpp)
+    target_link_libraries(hum_note_editor_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_note_editor_tests COMMAND hum_note_editor_tests)
+    set_tests_properties(hum_note_editor_tests PROPERTIES LABELS "core;note-editor;midi")
+
+    add_executable(hum_scale_guidance_tests tests/scale_guidance_tests.cpp)
+    target_link_libraries(hum_scale_guidance_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_scale_guidance_tests COMMAND hum_scale_guidance_tests)
+    set_tests_properties(hum_scale_guidance_tests PROPERTIES LABELS "core;note-editor;scale;midi")
+
+    add_executable(hum_arrangement_tests tests/arrangement_tests.cpp)
+    target_link_libraries(hum_arrangement_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_arrangement_tests COMMAND hum_arrangement_tests)
+    set_tests_properties(hum_arrangement_tests PROPERTIES LABELS "core;playlist;project;midi")
+
+    add_executable(hum_project_file_tests tests/project_file_tests.cpp)
+    target_link_libraries(hum_project_file_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_project_file_tests COMMAND hum_project_file_tests)
+    set_tests_properties(hum_project_file_tests PROPERTIES LABELS "core;project")
+
+    add_executable(hum_simple_synth_tests tests/simple_synth_tests.cpp)
+    target_link_libraries(hum_simple_synth_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_simple_synth_tests COMMAND hum_simple_synth_tests)
+    set_tests_properties(hum_simple_synth_tests PROPERTIES LABELS "core;playback")
+
+    add_executable(hum_mvp_workflow_tests tests/mvp_workflow_tests.cpp)
+    target_include_directories(hum_mvp_workflow_tests PRIVATE tests)
+    target_link_libraries(hum_mvp_workflow_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_mvp_workflow_tests COMMAND hum_mvp_workflow_tests)
+    set_tests_properties(hum_mvp_workflow_tests PROPERTIES
+        LABELS "core;integration;midi;playback;project;recording")
 endif()
 
 if(HUM_BUILD_GUI)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Concurrent Multimedia Widgets)
+    if(BUILD_TESTING)
+        find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+    endif()
 
     add_executable(hum_to_sing
         src/app/LevelMeter.cpp
         src/app/LevelMeter.hpp
+        src/app/PianoRollWidget.cpp
+        src/app/PianoRollWidget.hpp
+        src/app/PlaylistWidget.cpp
+        src/app/PlaylistWidget.hpp
         src/app/main.cpp
         src/app/MainWindow.cpp
         src/app/MainWindow.hpp
@@ -75,10 +117,14 @@ if(HUM_BUILD_GUI)
         src/app/PitchLabProcessor.hpp
         src/app/PhraseConversionProcessor.cpp
         src/app/PhraseConversionProcessor.hpp
+        src/app/ProjectFileStore.cpp
+        src/app/ProjectFileStore.hpp
         src/app/QtAudioCapture.cpp
         src/app/QtAudioCapture.hpp
         src/app/QtAudioPlayback.cpp
         src/app/QtAudioPlayback.hpp
+        src/app/QtMidiPlayback.cpp
+        src/app/QtMidiPlayback.hpp
     )
     target_link_libraries(hum_to_sing
         PRIVATE
@@ -93,8 +139,15 @@ if(HUM_BUILD_GUI)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "Hum-to-MIDI Music Sketchpad"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.hum-to-sing.sketchpad"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
     if(APPLE)
+        if(CMAKE_OSX_DEPLOYMENT_TARGET)
+            set(HUM_MACOS_MINIMUM_VERSION "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        else()
+            set(HUM_MACOS_MINIMUM_VERSION "13.0")
+        endif()
         set_target_properties(hum_to_sing PROPERTIES
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MacOSXBundleInfo.plist.in"
         )
@@ -104,6 +157,20 @@ if(HUM_BUILD_GUI)
         BUNDLE DESTINATION .
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
+    if(UNIX AND NOT APPLE)
+        install(FILES cmake/HumToSing.desktop
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+        )
+    endif()
+    install(FILES
+        README.md
+        docs/quick-start.md
+        docs/project-files.md
+        docs/mvp-beta-checklist.md
+        docs/mvp-release-results.md
+        docs/dependencies-and-licenses.md
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/HumToSing
+    )
 
     if(BUILD_TESTING)
         add_test(NAME hum_app_smoke COMMAND hum_to_sing --smoke-test)
@@ -112,10 +179,72 @@ if(HUM_BUILD_GUI)
             LABELS "gui;smoke"
             TIMEOUT 10
         )
+
+        add_executable(hum_piano_roll_ui_tests
+            tests/piano_roll_ui_tests.cpp
+            src/app/PianoRollWidget.cpp
+            src/app/PianoRollWidget.hpp
+        )
+        target_include_directories(hum_piano_roll_ui_tests PRIVATE src/app)
+        target_link_libraries(hum_piano_roll_ui_tests
+            PRIVATE
+                HumToSing::core
+                Qt6::Test
+                Qt6::Widgets
+        )
+        add_test(NAME hum_piano_roll_ui_tests COMMAND hum_piano_roll_ui_tests)
+        set_tests_properties(hum_piano_roll_ui_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            LABELS "gui;note-editor"
+            TIMEOUT 15
+        )
+
+        add_executable(hum_playlist_ui_tests
+            tests/playlist_ui_tests.cpp
+            src/app/PlaylistWidget.cpp
+        )
+        target_include_directories(hum_playlist_ui_tests PRIVATE src/app)
+        target_link_libraries(hum_playlist_ui_tests
+            PRIVATE HumToSing::core Qt6::Test Qt6::Widgets)
+        add_test(NAME hum_playlist_ui_tests COMMAND hum_playlist_ui_tests)
+        set_tests_properties(hum_playlist_ui_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            LABELS "gui;playlist"
+            TIMEOUT 15)
+
+        add_executable(hum_project_store_tests
+            tests/project_store_tests.cpp
+            src/app/ProjectFileStore.cpp
+            src/app/ProjectFileStore.hpp
+        )
+        target_include_directories(hum_project_store_tests PRIVATE src/app)
+        target_link_libraries(hum_project_store_tests PRIVATE HumToSing::core Qt6::Core)
+        add_test(NAME hum_project_store_tests COMMAND hum_project_store_tests)
+        set_tests_properties(hum_project_store_tests PROPERTIES LABELS "gui;project")
     endif()
 endif()
 
 set(CPACK_PACKAGE_NAME "HumToSing")
 set(CPACK_PACKAGE_VENDOR "Hum-to-MIDI Music Sketchpad")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_CONTACT "Hum-to-MIDI Music Sketchpad maintainers")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Offline single-track hum-to-MIDI melody sketchpad")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "HumToSing")
+set(CPACK_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
+)
+set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FixPackagePermissions.cmake")
+set(CPACK_POST_BUILD_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FixPackageArtifactPermissions.cmake")
+if(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "TGZ;DEB")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libc6, libstdc++6, libqt6core6t64 (>= 6.8), libqt6gui6 (>= 6.8), libqt6widgets6 (>= 6.8), libqt6multimedia6 (>= 6.8), qt6-qpa-plugins")
+endif()
 include(CPack)

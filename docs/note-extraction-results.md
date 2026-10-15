@@ -33,7 +33,7 @@ The same suite verified:
 
 The tests convert a 0.5-second onset and 0.25-second duration at 60, 120, and 180 BPM with 480 TPQ, then round-trip the onset to 0.5 seconds. A separate test-only MIDI reader parses the writer's result and verifies format 0, one track, 480 division, a 500000-microsecond tempo event for 120 BPM, every note-on/off pair, expected tick durations, and note-off-before-note-on ordering for a repeated pitch on one tick. It also reads back the exported local file byte-for-byte and removes it.
 
-The direct executable reported **78 passing assertions**. Final CTest/build totals are recorded in the task report after the full suite is rerun.
+The direct executable reported **78 passing assertions**. After the piano-roll milestone, the final desktop CTest run passed all seven registered tests, including this extraction suite.
 
 ## Hardware and human-voice limits
 

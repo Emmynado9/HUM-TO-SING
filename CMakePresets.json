@@ -27,6 +27,17 @@
         "BUILD_TESTING": "ON",
         "HUM_BUILD_GUI": "OFF"
       }
+    },
+    {
+      "name": "release",
+      "displayName": "Desktop release package build",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "HUM_BUILD_GUI": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -39,6 +50,11 @@
       "name": "core",
       "configurePreset": "core",
       "jobs": 2
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "jobs": 2
     }
   ],
   "testPresets": [
@@ -50,6 +66,11 @@
     {
       "name": "core",
       "configurePreset": "core",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
       "output": { "outputOnFailure": true }
     }
   ]

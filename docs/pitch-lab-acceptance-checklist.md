@@ -16,4 +16,5 @@ Recorded on 2026-10-10.
 - [x] Detector-window, hop, worker, and UI-update latency are distinguished.
 - [ ] Live humming accuracy, breathiness, vibrato behavior, and octave-error rate are verified on physical hardware.
 - [ ] Windows and macOS builds and audio behavior are tested.
-- [ ] Note segmentation, piano-roll editing, and chord recognition are implemented; these remain later milestones.
+- [x] Later milestones added note segmentation and piano-roll editing behind separate boundaries.
+- [ ] Chord recognition remains deferred.

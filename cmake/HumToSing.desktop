@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hum-to-MIDI Music Sketchpad
+Comment=Record a hummed melody, correct it, play it, and export MIDI
+Exec=HumToSing
+Icon=audio-input-microphone
+Categories=AudioVideo;Audio;Music;
+Terminal=false
+StartupNotify=true

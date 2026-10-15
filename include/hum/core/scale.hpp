@@ -4,9 +4,15 @@
 
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace hum::core {
+
+enum class ScaleMode : std::uint8_t {
+    major,
+    natural_minor,
+};
 
 struct ScaleDefinition {
     std::uint8_t root_pitch_class{0};
@@ -24,5 +30,18 @@ public:
         std::span<const TimedMidiNote> notes,
         const ScaleDefinition& scale) const = 0;
 };
+
+class NearestScaleProcessor final : public IScaleProcessor {
+public:
+    [[nodiscard]] std::vector<TimedMidiNote> process(
+        std::span<const TimedMidiNote> notes,
+        const ScaleDefinition& scale) const override;
+};
+
+[[nodiscard]] ScaleDefinition makeScaleDefinition(
+    std::uint8_t root_pitch_class,
+    ScaleMode mode);
+[[nodiscard]] std::string_view scaleModeName(ScaleMode mode) noexcept;
+[[nodiscard]] std::string_view pitchClassName(std::uint8_t pitch_class) noexcept;
 
 } // namespace hum::core

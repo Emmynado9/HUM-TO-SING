@@ -18,6 +18,10 @@
     <string>@MACOSX_BUNDLE_SHORT_VERSION_STRING@</string>
     <key>CFBundleVersion</key>
     <string>@MACOSX_BUNDLE_BUNDLE_VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>@HUM_MACOS_MINIMUM_VERSION@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>

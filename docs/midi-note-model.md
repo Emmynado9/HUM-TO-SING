@@ -25,4 +25,22 @@ ticks   = round(seconds × tempo_bpm × ticks_per_quarter / 60)
 
 Detected pitches remain fractional in the raw analysis. The note segmenter rounds a stable pitch to its nearest equal-tempered MIDI note, applies its separate onset/transition policy, and emits `TimedMidiNote`. The milestone assigns fixed velocity 96. This avoids claiming that microphone amplitude precisely represents performance intent; future velocity work needs calibration and user control.
 
-`StandardMidiFileExporter` writes Standard MIDI File format 0: a six-byte `MThd` header, one `MTrk`, a tempo meta event, explicit note-on/note-off pairs, and end-of-track. Note-offs sort before note-ons at the same tick so pause-separated repeated pitches retrigger cleanly. The writer does not use running status. `Project` remains a serialization-friendly in-memory container; a project-file format is still deferred.
+`StandardMidiFileExporter` writes Standard MIDI File format 0: a six-byte `MThd` header, one `MTrk`, a tempo meta event, explicit note-on/note-off pairs, and end-of-track. Note-offs sort before note-ons at the same tick so pause-separated repeated pitches retrigger cleanly. The writer does not use running status. Tests parse the output independently and verify note pairs, pitches, durations, division, and tempo metadata.
+
+## Versioned project document
+
+`ProjectDocument` schema version 1 stores `TimedMidiNote` canonical notes directly rather than storing a second MIDI or view-only note model. It also stores tempo, metric tick division, root, scale mode, Magnet state, and rhythm-snap setting. The strict local codec writes `audio_storage omitted`; source audio, raw pitch frames, and rendered instrument PCM are not embedded or referenced. See `project-files.md` for load/save behavior.
+
+## Editable document
+
+`NoteEditor` owns the piano roll's canonical `std::vector<TimedMidiNote>`; the widget reads and changes that model rather than holding a second view-specific MIDI representation. Loading a successful transcription copies its derived notes into the editor and resets edit history. The `PhraseConversionResult` still retains the original derived notes and raw pitch frames, and the recorder retains its original audio. Ordinary selection and editing never rerun analysis and never modify those originals. **Re-transcribe recording** is the explicit operation that replaces the editable copy.
+
+Every committed add, delete, move, or resize is validated with `TimedMidiNote::isValid` and stored as one before/after history transaction. A drag uses an uncommitted visual preview and adds one history entry only when the pointer is released. MIDI export calls `MidiTimeline::fromTimedNotes` on `NoteEditor::notes()`, so pitch, onset, and duration corrections are present in the written file.
+
+The overlap policy is `preserve_independent_events`. Notes at any pitches may overlap in time; editing never merges or deletes them. Touching half-open boundaries do not count as overlap. This preserves the user's data, although same-pitch overlaps may be interpreted differently by MIDI receivers that track note state only by channel and pitch.
+
+## Scale-guided export projection
+
+`NoteEditor::notes()` remains the canonical editable phrase. `NoteEditor::projectedNotes()` is a derived copy used by both the piano roll and MIDI export. With Magnet OFF, projected and canonical notes are identical. With Magnet ON, only `pitch` may differ: each canonical pitch is independently mapped through the selected `ScaleDefinition`. Start, duration, velocity, channel, note count, and ordering are copied exactly.
+
+Scale selection and the Magnet toggle are view/playback/export settings rather than destructive note-edit commands, so they do not enter undo history. Undo and redo restore canonical note snapshots and then recompute the projection using the currently selected scale. Changing key or mode never consumes a previously projected pitch. Switching Magnet OFF therefore reveals the latest canonical edits. Built-in playback and export both consume this projection, so visible, audible, and exported pitches agree.

@@ -31,3 +31,29 @@ Before note extraction changes on 2026-10-13, the Qt-free configuration and buil
 Reusable behavior already included bounded in-memory capture, mono conversion, metadata, playback of the original recording, raw YIN pitch frames, display smoothing, worker execution, and MIDI validation/time conversion primitives. There was no seconds-based extracted-note model, note segmenter, conversion worker, conversion progress/cancellation UI, note-event table, Standard MIDI File writer, or MIDI structural test. Live hardware remained unavailable because this cloud environment exposed no audio device.
 
 The planned files and components were stated before editing: raw pitch-runner access; seconds and tick MIDI models; new core extraction and file-writer components; a Qt phrase-conversion worker and main-window integration; deterministic extraction/MIDI tests; CMake registration; and focused README, ADR, timing, results, and acceptance documentation.
+
+## Piano-roll milestone baseline
+
+Before piano-roll changes on 2026-10-13, the Qt-free configuration and build completed and `ctest --preset core` passed 4/4 tests: core, recording, pitch, and note extraction. The desktop configuration and build completed and `ctest --preset debug` passed 5/5 tests, including the offscreen application smoke check. CMake repeated the existing nonfatal missing XKB and Vulkan-header discovery warnings.
+
+Reusable behavior already included the canonical seconds-based `TimedMidiNote` model, raw and derived post-recording results, seconds-to-MIDI-ticks conversion, and Standard MIDI File export. The desktop showed extracted notes in a read-only table and exported the conversion result directly. It had no piano-roll coordinate model, transactional editor, selection, add/delete/move/resize gestures, zoom, scrolling, rhythm-snap control, or editor-specific UI test.
+
+The planned files and components were stated before editing: a Qt-free `NoteEditor` and coordinate transform; a Qt `PianoRollWidget`; main-window conversion/export integration; CMake and deterministic core/UI tests; and focused README, ADR, model, results, manual, and acceptance documentation. Existing capture, analysis, and transcription behavior remained outside the edit path.
+
+## Scale-guidance milestone baseline
+
+Before scale-guidance changes on 2026-10-13, the Qt-free configuration and build completed and `ctest --preset core` passed 5/5 tests. The desktop configuration and build completed and `ctest --preset debug` passed 7/7 tests, including the offscreen application and piano-roll interaction checks. CMake repeated the existing nonfatal missing XKB and Vulkan-header discovery warnings.
+
+Reusable behavior included a basic interval-based `ScaleDefinition` with C-major defaults and a lower-pitch equal-distance rule, plus canonical `TimedMidiNote` editing, transactional history, piano-roll geometry, and export from canonical notes. The scale model was not connected to the editor or UI. There were no 12-root or mode selectors, natural-minor factory, in/out-of-scale cues, Magnet control, reversible projection, or scale/export consistency tests.
+
+The planned changes were stated before editing: extend `scale.hpp/.cpp`; add a derived projection to `NoteEditor`; render scale guidance in `PianoRollWidget`; add root, mode, and Magnet controls and projected export in `MainWindow`; add focused core/UI tests and CMake registration; and update the relevant architecture, behavior, result, and manual-test documents. Audio capture, detection, transcription, rhythm timing, tracks, chords, and arrangement remained outside the change.
+
+## Single-track MVP completion baseline — 2026-10-13
+
+Before this milestone, the preserved working tree built successfully. The core-only preset passed **6/6** tests and the Qt desktop preset passed **8/8** tests. The Qt configure step reported nonfatal missing optional XKB development metadata and Vulkan headers. The offscreen app startup test passed. The host was Debian 13 x86_64 on five visible AMD EPYC 9V74 virtual CPUs and had no `/dev/snd` or native display session.
+
+Working behavior already included bounded local microphone capture, original-recording audition, live/replay YIN pitch diagnostics, conservative post-recording note extraction, a canonical transactional piano roll, reversible Major/Natural-minor Magnet guidance, and format-0 MIDI export from the visible pitch projection. Existing changes for piano-roll and scale milestones were uncommitted and were preserved.
+
+Exact remaining first-milestone gaps were: no MIDI instrument playback, Play/Stop or synchronized playhead; fixed 120 BPM UI export; no versioned project file or safe project write; no unsaved-change handling; no end-to-end capture-to-reopen-to-export regression; and only an unspecified CPack archive scaffold. Hardware recording/playback, native UI behavior, offline relaunch, clean installation, and DAW import had not been run.
+
+The announced change set was limited to a Qt-free procedural synth and project codec; Qt audio-clock playback and atomic project storage adapters; Save/Open, tempo, melody playback, lifecycle, dirty-state, and playhead UI wiring; focused core/Qt/end-to-end tests; Debian package metadata; and the corresponding architecture, quick-start, acceptance, and release records. Existing capture, detector, segmentation, editing, scale, and SMF algorithms were not rewritten.

@@ -215,6 +215,20 @@ void testShutdownCleanup() {
     expect(source.stop_count == 1, "app closure stops hardware exactly once");
 }
 
+void testExplicitRecordingDiscard() {
+    hum::test::FakeAudioCapture source;
+    hum::core::RecordingController recorder(source);
+    expect(recorder.start("fake-1") == hum::core::StartRecordingResult::started,
+        "capture starts before explicit discard");
+    source.emit(std::vector<float>(480, 0.2F));
+    expect(!recorder.clearRecording(), "active recording cannot be discarded behind the callback");
+    expect(recorder.stop(), "capture stops before explicit discard");
+    expect(recorder.recording() != nullptr, "completed recording exists before discard");
+    expect(recorder.clearRecording(), "idle completed recording can be explicitly discarded");
+    expect(recorder.recording() == nullptr && recorder.state() == hum::core::RecordingState::idle,
+        "discard releases audio and returns to idle");
+}
+
 } // namespace
 
 int main() {
@@ -229,6 +243,7 @@ int main() {
     testPermissionAndMissingDevice();
     testPlaybackConversionPreservesTiming();
     testShutdownCleanup();
+    testExplicitRecordingDiscard();
 
     if (failures == 0) {
         std::cout << "All recording tests passed (" << checks << " assertions).\n";

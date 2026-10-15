@@ -1,7 +1,7 @@
 #include "hum/core/scale.hpp"
 
-#include <array>
 #include <algorithm>
+#include <array>
 
 namespace hum::core {
 
@@ -42,6 +42,7 @@ std::uint8_t ScaleDefinition::nearestPitch(const std::uint8_t midi_pitch) const 
     }
 
     for (int distance = 1; distance <= 127; ++distance) {
+        // Checking the lower candidate first defines the equal-distance tie break.
         const int lower = bounded_pitch - distance;
         if (lower >= 0 && contains(static_cast<std::uint8_t>(lower))) {
             return static_cast<std::uint8_t>(lower);
@@ -54,6 +55,48 @@ std::uint8_t ScaleDefinition::nearestPitch(const std::uint8_t midi_pitch) const 
     }
 
     return static_cast<std::uint8_t>(bounded_pitch);
+}
+
+std::vector<TimedMidiNote> NearestScaleProcessor::process(
+    const std::span<const TimedMidiNote> notes,
+    const ScaleDefinition& scale) const {
+    std::vector<TimedMidiNote> result(notes.begin(), notes.end());
+    if (!scale.isValid()) {
+        return result;
+    }
+    for (auto& note : result) {
+        note.pitch = scale.nearestPitch(note.pitch);
+    }
+    return result;
+}
+
+ScaleDefinition makeScaleDefinition(
+    const std::uint8_t root_pitch_class,
+    const ScaleMode mode) {
+    switch (mode) {
+    case ScaleMode::major:
+        return {root_pitch_class, {0, 2, 4, 5, 7, 9, 11}};
+    case ScaleMode::natural_minor:
+        return {root_pitch_class, {0, 2, 3, 5, 7, 8, 10}};
+    }
+    return {root_pitch_class, {}};
+}
+
+std::string_view scaleModeName(const ScaleMode mode) noexcept {
+    switch (mode) {
+    case ScaleMode::major:
+        return "Major";
+    case ScaleMode::natural_minor:
+        return "Natural minor";
+    }
+    return "Unknown scale";
+}
+
+std::string_view pitchClassName(const std::uint8_t pitch_class) noexcept {
+    constexpr std::array<std::string_view, 12> names{
+        "C", "C#/Db", "D", "D#/Eb", "E", "F",
+        "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"};
+    return pitch_class < names.size() ? names[pitch_class] : std::string_view{"?"};
 }
 
 } // namespace hum::core

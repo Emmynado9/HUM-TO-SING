@@ -1,36 +1,45 @@
 #include "MainWindow.hpp"
 
 #include "LevelMeter.hpp"
+#include "PianoRollWidget.hpp"
+#include "PlaylistWidget.hpp"
 #include "PhraseConversionProcessor.hpp"
 #include "PitchLabProcessor.hpp"
+#include "ProjectFileStore.hpp"
 #include "QtAudioCapture.hpp"
 #include "QtAudioPlayback.hpp"
+#include "QtMidiPlayback.hpp"
 #include "hum/core/midi_file.hpp"
+#include "hum/core/note_editor.hpp"
 #include "hum/core/note_extraction.hpp"
 #include "hum/core/pitch.hpp"
+#include "hum/core/project_file.hpp"
 #include "hum/core/recording.hpp"
 
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDialog>
 #include <QFrame>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
-#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QMetaObject>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QSlider>
+#include <QSignalBlocker>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStyle>
-#include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -96,13 +105,17 @@ public:
           capture_(window),
           recorder_(capture_, 30.0, 0.98F),
           playback_(window),
+          midi_playback_(window),
           pitch_processor_(window),
           phrase_processor_(window),
           pitch_smoother_(5) {
         buildUi();
         wireEvents();
+        updateScaleGuidanceUi();
+        updateEditorUi();
         refreshDevices();
         updateUi();
+        updateWindowTitle();
         monitor_.start(33);
     }
 
@@ -118,16 +131,31 @@ public:
         monitor_.stop();
         capture_.setDevicesChangedCallback({});
         playback_.stop();
+        midi_playback_.stop();
+        if (piano_roll_) {
+            piano_roll_->setPlayheadSeconds(std::nullopt);
+        }
+        if (playlist_) {
+            playlist_->setPlayheadSeconds(std::nullopt);
+        }
         pitch_processor_.cancel();
         phrase_processor_.cancel();
         recorder_.shutdown();
     }
 
+    [[nodiscard]] bool requestClose() {
+        if (!confirmDiscardChanges(QStringLiteral("close the application"))) {
+            return false;
+        }
+        shutdown();
+        return true;
+    }
+
 private:
     void buildUi() {
-        window_->setWindowTitle(QStringLiteral("Hum-to-MIDI Music Sketchpad — Phrase to MIDI"));
-        window_->setMinimumSize(1'120, 760);
-        window_->resize(1'320, 900);
+        window_->setWindowTitle(QStringLiteral("Hum-to-MIDI Music Sketchpad — Piano Roll"));
+        window_->setMinimumSize(1'180, 820);
+        window_->resize(1'460, 980);
 
         auto* root = new QWidget(window_);
         root->setObjectName(QStringLiteral("root"));
@@ -166,26 +194,45 @@ private:
         page->setSpacing(18);
         auto* header = new QHBoxLayout();
         auto* heading_box = new QVBoxLayout();
-        auto* eyebrow = new QLabel(QStringLiteral("HUM · INSPECT · EXPORT"), root);
+        auto* eyebrow = new QLabel(QStringLiteral("HUM · EDIT · PLAY · EXPORT"), root);
         eyebrow->setObjectName(QStringLiteral("eyebrow"));
-        auto* title = new QLabel(QStringLiteral("Turn one hummed phrase into MIDI"), root);
+        auto* title = new QLabel(QStringLiteral("Shape your hummed melody"), root);
         title->setObjectName(QStringLiteral("pageTitle"));
         auto* subtitle = new QLabel(
-            QStringLiteral("Record locally, inspect conservative note events, then export a standard MIDI file."), root);
+            QStringLiteral("Record locally, correct notes, hear the built-in instrument, then save or export."), root);
         subtitle->setObjectName(QStringLiteral("subtitle"));
         heading_box->addWidget(eyebrow);
         heading_box->addWidget(title);
         heading_box->addWidget(subtitle);
         header->addLayout(heading_box, 1);
+        project_name_label_ = new QLabel(QStringLiteral("Untitled project"), root);
+        project_name_label_->setObjectName(QStringLiteral("footnote"));
+        project_name_label_->setAlignment(Qt::AlignCenter);
+        open_project_button_ = new QPushButton(QStringLiteral("Open project…"), root);
+        save_project_button_ = new QPushButton(QStringLiteral("Save project…"), root);
+        open_project_button_->setObjectName(QStringLiteral("openProjectButton"));
+        save_project_button_->setObjectName(QStringLiteral("saveProjectButton"));
+        open_project_button_->setToolTip(QStringLiteral(
+            "Open editable notes and settings. Original recordings are not stored in project files."));
+        save_project_button_->setToolTip(QStringLiteral(
+            "Save canonical editable notes and settings. Session audio remains in memory only."));
+        header->addWidget(project_name_label_, 0, Qt::AlignTop);
+        header->addWidget(open_project_button_, 0, Qt::AlignTop);
+        header->addWidget(save_project_button_, 0, Qt::AlignTop);
         auto* privacy = new QLabel(QStringLiteral("●  IN MEMORY · NEVER UPLOADED"), root);
         privacy->setObjectName(QStringLiteral("privacyBadge"));
         privacy->setAlignment(Qt::AlignCenter);
         header->addWidget(privacy, 0, Qt::AlignTop);
         page->addLayout(header);
 
-        auto* columns = new QHBoxLayout();
-        columns->setSpacing(18);
-        auto* recorder_card = new QFrame(root);
+        recording_dialog_ = new QDialog(window_);
+        recording_dialog_->setObjectName(QStringLiteral("recordingDialog"));
+        recording_dialog_->setWindowTitle(QStringLiteral("Hum → MIDI — Record and convert"));
+        recording_dialog_->resize(760, 840);
+        auto* recording_content = new QWidget(recording_dialog_);
+        auto* recording_layout = new QVBoxLayout(recording_content);
+        recording_layout->setSpacing(18);
+        auto* recorder_card = new QFrame(recording_content);
         recorder_card->setObjectName(QStringLiteral("card"));
         auto* recorder_layout = new QVBoxLayout(recorder_card);
         recorder_layout->setContentsMargins(24, 22, 24, 24);
@@ -217,6 +264,7 @@ private:
         level_title->setObjectName(QStringLiteral("fieldTitle"));
         clip_label_ = new QLabel(QStringLiteral("CLIPPING — move back from the microphone"), recorder_card);
         clip_label_->setObjectName(QStringLiteral("clipWarning"));
+        clip_label_->hide();
         level_heading->addWidget(level_title);
         level_heading->addStretch();
         level_heading->addWidget(clip_label_);
@@ -254,11 +302,13 @@ private:
         limit->setObjectName(QStringLiteral("footnote"));
         limit->setAlignment(Qt::AlignCenter);
         recorder_layout->addWidget(limit);
-        columns->addWidget(recorder_card, 2);
+        recording_layout->addWidget(recorder_card);
 
-        auto* side = new QVBoxLayout();
-        side->setSpacing(18);
-        auto* pitch_card = new QFrame(root);
+        pitch_dialog_ = new QDialog(window_);
+        pitch_dialog_->setObjectName(QStringLiteral("pitchLabDialog"));
+        pitch_dialog_->setWindowTitle(QStringLiteral("Pitch Lab — Local YIN diagnostics"));
+        pitch_dialog_->resize(660, 790);
+        auto* pitch_card = new QFrame(pitch_dialog_);
         pitch_card->setObjectName(QStringLiteral("card"));
         auto* pitch_layout = new QVBoxLayout(pitch_card);
         pitch_layout->setContentsMargins(22, 20, 22, 20);
@@ -339,9 +389,10 @@ private:
         pitch_layout->addWidget(pitch_detail_label_);
         pitch_layout->addWidget(latency_label_);
         pitch_layout->addWidget(replay_analysis_button_);
-        side->addWidget(pitch_card, 2);
+        new QVBoxLayout(pitch_dialog_);
+        pitch_dialog_->layout()->addWidget(pitch_card);
 
-        auto* phrase_card = new QFrame(root);
+        auto* phrase_card = new QFrame(recording_content);
         phrase_card->setObjectName(QStringLiteral("card"));
         auto* phrase_layout = new QVBoxLayout(phrase_card);
         phrase_layout->setContentsMargins(22, 18, 22, 18);
@@ -356,18 +407,9 @@ private:
         phrase_progress_->setRange(0, 100);
         phrase_progress_->setValue(0);
         phrase_progress_->setTextVisible(true);
-        phrase_table_ = new QTableWidget(0, 4, phrase_card);
-        phrase_table_->setHorizontalHeaderLabels({
-            QStringLiteral("Note"), QStringLiteral("Start"),
-            QStringLiteral("Duration"), QStringLiteral("Velocity")});
-        phrase_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        phrase_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-        phrase_table_->verticalHeader()->setVisible(false);
-        phrase_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-        phrase_table_->horizontalHeader()->setStretchLastSection(true);
-        phrase_table_->setMinimumHeight(130);
         auto* phrase_controls = new QHBoxLayout();
-        convert_button_ = new QPushButton(QStringLiteral("Convert again"), phrase_card);
+        convert_button_ = new QPushButton(QStringLiteral("Add saved take again"), phrase_card);
+        convert_button_->setToolTip(QStringLiteral("Convert the last in-memory take and append a region on the selected track. Existing regions are retained."));
         cancel_conversion_button_ = new QPushButton(QStringLiteral("Cancel"), phrase_card);
         export_button_ = new QPushButton(QStringLiteral("Export MIDI…"), phrase_card);
         convert_button_->setObjectName(QStringLiteral("secondaryButton"));
@@ -378,24 +420,218 @@ private:
         phrase_controls->addStretch();
         phrase_controls->addWidget(export_button_);
         auto* phrase_note = new QLabel(
-            QStringLiteral("Original seconds retained · 120 BPM · 480 TPQ · fixed velocity 96"),
+            QStringLiteral("New takes append regions. Original audio and raw analysis are retained for the latest take only; projects save notes, not recordings."),
             phrase_card);
+        phrase_note->setWordWrap(true);
         phrase_note->setObjectName(QStringLiteral("footnote"));
         phrase_layout->addWidget(phrase_title);
         phrase_layout->addWidget(phrase_status_label_);
         phrase_layout->addWidget(phrase_progress_);
-        phrase_layout->addWidget(phrase_table_);
         phrase_layout->addLayout(phrase_controls);
         phrase_layout->addWidget(phrase_note);
-        side->addWidget(phrase_card, 1);
-        columns->addLayout(side, 2);
+        recording_layout->addWidget(phrase_card);
+        auto* recording_scroll = new QScrollArea(recording_dialog_);
+        recording_scroll->setWidgetResizable(true);
+        recording_scroll->setFrameShape(QFrame::NoFrame);
+        recording_scroll->setWidget(recording_content);
+        auto* recording_window_layout = new QVBoxLayout(recording_dialog_);
+        recording_window_layout->addWidget(recording_scroll);
 
-        page->addLayout(columns, 1);
+        piano_dialog_ = new QDialog(window_);
+        piano_dialog_->setObjectName(QStringLiteral("pianoRollDialog"));
+        piano_dialog_->setWindowTitle(QStringLiteral("Piano roll — Correct your notes"));
+        piano_dialog_->resize(1240, 660);
+
+        auto* piano_card = new QFrame(piano_dialog_);
+        piano_card->setObjectName(QStringLiteral("card"));
+        auto* piano_layout = new QVBoxLayout(piano_card);
+        piano_layout->setContentsMargins(18, 16, 18, 18);
+        piano_layout->setSpacing(9);
+        auto* piano_heading = new QHBoxLayout();
+        auto* piano_title_box = new QVBoxLayout();
+        auto* piano_title = new QLabel(QStringLiteral("Melody workspace"), piano_card);
+        piano_title->setObjectName(QStringLiteral("cardTitle"));
+        editor_status_label_ = new QLabel(
+            QStringLiteral("Record a melody, or double-click the grid to add your first note."),
+            piano_card);
+        editor_status_label_->setObjectName(QStringLiteral("footnote"));
+        editor_status_label_->setWordWrap(true);
+        piano_title_box->addWidget(piano_title);
+        piano_title_box->addWidget(editor_status_label_);
+        piano_heading->addLayout(piano_title_box, 1);
+
+        undo_button_ = new QPushButton(QStringLiteral("Undo"), piano_card);
+        redo_button_ = new QPushButton(QStringLiteral("Redo"), piano_card);
+        add_note_button_ = new QPushButton(QStringLiteral("+ Add note"), piano_card);
+        delete_note_button_ = new QPushButton(QStringLiteral("Delete"), piano_card);
+        for (auto* button : {undo_button_, redo_button_, add_note_button_, delete_note_button_}) {
+            button->setObjectName(QStringLiteral("secondaryButton"));
+            piano_heading->addWidget(button);
+        }
+        midi_play_button_ = new QPushButton(QStringLiteral("▶  Play melody"), piano_card);
+        midi_play_button_->setObjectName(QStringLiteral("midiPlayButton"));
+        midi_play_button_->setToolTip(QStringLiteral(
+            "Play the visible pitches with the built-in offline soft-tone instrument."));
+        piano_heading->addWidget(midi_play_button_);
+        piano_layout->addLayout(piano_heading);
+
+        auto* scale_tools = new QHBoxLayout();
+        scale_tools->setSpacing(8);
+        auto* key_label = new QLabel(QStringLiteral("Key"), piano_card);
+        key_label->setObjectName(QStringLiteral("fieldTitle"));
+        root_pitch_combo_ = new QComboBox(piano_card);
+        root_pitch_combo_->setAccessibleName(QStringLiteral("Root key"));
+        for (std::uint8_t root = 0; root < 12; ++root) {
+            root_pitch_combo_->addItem(
+                QString::fromStdString(std::string(core::pitchClassName(root))), root);
+        }
+        auto* scale_label = new QLabel(QStringLiteral("Scale"), piano_card);
+        scale_label->setObjectName(QStringLiteral("fieldTitle"));
+        scale_mode_combo_ = new QComboBox(piano_card);
+        scale_mode_combo_->setAccessibleName(QStringLiteral("Scale type"));
+        scale_mode_combo_->addItem(QStringLiteral("Major"),
+            static_cast<int>(core::ScaleMode::major));
+        scale_mode_combo_->addItem(QStringLiteral("Natural minor"),
+            static_cast<int>(core::ScaleMode::natural_minor));
+        magnet_button_ = new QPushButton(QStringLiteral("Magnet OFF"), piano_card);
+        magnet_button_->setObjectName(QStringLiteral("magnetButton"));
+        magnet_button_->setCheckable(true);
+        magnet_button_->setAccessibleName(QStringLiteral("Scale Magnet"));
+        magnet_button_->setToolTip(QStringLiteral(
+            "Shows and exports the closest note in the selected scale without replacing your original pitch."));
+        scale_tools->addWidget(key_label);
+        scale_tools->addWidget(root_pitch_combo_);
+        scale_tools->addWidget(scale_label);
+        scale_tools->addWidget(scale_mode_combo_);
+        scale_tools->addWidget(magnet_button_);
+        scale_tools->addStretch();
+        piano_layout->addLayout(scale_tools);
+
+        scale_guidance_label_ = new QLabel(
+            QStringLiteral("C Major guides pitch only. Key selection does not transpose your melody. Magnet is OFF."),
+            piano_card);
+        scale_guidance_label_->setObjectName(QStringLiteral("scaleGuidance"));
+        scale_guidance_label_->setWordWrap(true);
+        piano_layout->addWidget(scale_guidance_label_);
+
+        auto* piano_tools = new QHBoxLayout();
+        piano_tools->setSpacing(8);
+        auto* snap_label = new QLabel(QStringLiteral("Rhythm snap"), piano_card);
+        snap_label->setObjectName(QStringLiteral("fieldTitle"));
+        rhythm_snap_combo_ = new QComboBox(piano_card);
+        rhythm_snap_combo_->setAccessibleName(QStringLiteral("Optional rhythmic timing snap"));
+        rhythm_snap_combo_->setToolTip(QStringLiteral(
+            "Rounds note timing to a rhythmic interval. This does not move pitches into a key or scale."));
+        rhythm_snap_combo_->addItem(QStringLiteral("Off · keep captured timing"), 0.0);
+        rhythm_snap_combo_->addItem(QStringLiteral("¼ beat · 0.125 s"), 0.125);
+        rhythm_snap_combo_->addItem(QStringLiteral("½ beat · 0.250 s"), 0.250);
+        rhythm_snap_combo_->addItem(QStringLiteral("1 beat · 0.500 s"), 0.500);
+        auto* tempo_label = new QLabel(QStringLiteral("Tempo"), piano_card);
+        tempo_label->setObjectName(QStringLiteral("fieldTitle"));
+        tempo_spin_ = new QDoubleSpinBox(piano_card);
+        tempo_spin_->setObjectName(QStringLiteral("tempoSpin"));
+        tempo_spin_->setAccessibleName(QStringLiteral("Project and MIDI export tempo"));
+        tempo_spin_->setRange(20.0, 400.0);
+        tempo_spin_->setDecimals(1);
+        tempo_spin_->setSingleStep(1.0);
+        tempo_spin_->setValue(core::kDefaultTempoBpm);
+        tempo_spin_->setSuffix(QStringLiteral(" BPM"));
+        tempo_spin_->setToolTip(QStringLiteral(
+            "Sets the playlist bar guide and MIDI tempo. It does not quantize or retime the melody."));
+        auto* horizontal_zoom_label = new QLabel(QStringLiteral("Time zoom"), piano_card);
+        horizontal_zoom_label->setObjectName(QStringLiteral("fieldTitle"));
+        horizontal_zoom_slider_ = new QSlider(Qt::Horizontal, piano_card);
+        horizontal_zoom_slider_->setRange(50, 520);
+        horizontal_zoom_slider_->setValue(160);
+        horizontal_zoom_slider_->setFixedWidth(120);
+        horizontal_zoom_slider_->setAccessibleName(QStringLiteral("Horizontal time zoom"));
+        auto* vertical_zoom_label = new QLabel(QStringLiteral("Pitch zoom"), piano_card);
+        vertical_zoom_label->setObjectName(QStringLiteral("fieldTitle"));
+        vertical_zoom_slider_ = new QSlider(Qt::Horizontal, piano_card);
+        vertical_zoom_slider_->setRange(10, 34);
+        vertical_zoom_slider_->setValue(20);
+        vertical_zoom_slider_->setFixedWidth(90);
+        vertical_zoom_slider_->setAccessibleName(QStringLiteral("Vertical pitch zoom"));
+        piano_tools->addWidget(snap_label);
+        piano_tools->addWidget(rhythm_snap_combo_);
+        piano_tools->addWidget(tempo_label);
+        piano_tools->addWidget(tempo_spin_);
+        piano_tools->addStretch();
+        piano_tools->addWidget(horizontal_zoom_label);
+        piano_tools->addWidget(horizontal_zoom_slider_);
+        piano_tools->addWidget(vertical_zoom_label);
+        piano_tools->addWidget(vertical_zoom_slider_);
+        piano_layout->addLayout(piano_tools);
+
+        piano_roll_ = new PianoRollWidget(note_editor_, piano_card);
+        piano_roll_->setObjectName(QStringLiteral("pianoRoll"));
+        piano_roll_->setMinimumHeight(280);
+        piano_layout->addWidget(piano_roll_, 1);
+        auto* piano_window_layout = new QVBoxLayout(piano_dialog_);
+        piano_window_layout->addWidget(piano_card);
+
+        auto* feature_toolbar = new QHBoxLayout();
+        auto featureButton = [this, root, feature_toolbar](const QString& text,
+            const QString& name, QDialog* dialog) {
+            auto* button = new QPushButton(text, root);
+            button->setObjectName(name);
+            button->setToolTip(QStringLiteral("Open this screen above the Playlist. Closing it keeps your work."));
+            feature_toolbar->addWidget(button);
+            QObject::connect(button, &QPushButton::clicked, window_, [this, dialog] {
+                showFeature(dialog);
+            });
+            return button;
+        };
+        open_recorder_button_ = featureButton(QStringLiteral("●  Hum → MIDI"), QStringLiteral("openRecorderButton"), recording_dialog_);
+        featureButton(QStringLiteral("▥  Piano roll"), QStringLiteral("openPianoRollButton"), piano_dialog_);
+        featureButton(QStringLiteral("Pitch Lab"), QStringLiteral("openPitchLabButton"), pitch_dialog_);
+        feature_toolbar->addStretch();
+        feature_toolbar->addWidget(midi_play_button_);
+        feature_toolbar->addWidget(export_button_);
+        page->addLayout(feature_toolbar);
+
+        auto* playlist_card = new QFrame(root);
+        playlist_card->setObjectName(QStringLiteral("card"));
+        auto* playlist_layout = new QVBoxLayout(playlist_card);
+        playlist_layout->setContentsMargins(20, 18, 20, 20);
+        playlist_layout->setSpacing(14);
+        auto* playlist_heading = new QHBoxLayout();
+        auto* playlist_title = new QLabel(QStringLiteral("Playlist"), playlist_card);
+        playlist_title->setObjectName(QStringLiteral("cardTitle"));
+        playlist_heading->addWidget(playlist_title);
+        playlist_heading->addStretch();
+        auto playlistButton = [playlist_card, playlist_heading](const QString& text, const QString& name) {
+            auto* button = new QPushButton(text, playlist_card);
+            button->setObjectName(name);
+            playlist_heading->addWidget(button);
+            return button;
+        };
+        add_track_button_ = playlistButton(QStringLiteral("+ Track"), QStringLiteral("addTrackButton"));
+        duplicate_region_button_ = playlistButton(QStringLiteral("Duplicate region"), QStringLiteral("duplicateRegionButton"));
+        delete_region_button_ = playlistButton(QStringLiteral("Delete region"), QStringLiteral("deleteRegionButton"));
+        playlist_undo_button_ = playlistButton(QStringLiteral("Undo"), QStringLiteral("playlistUndoButton"));
+        playlist_redo_button_ = playlistButton(QStringLiteral("Redo"), QStringLiteral("playlistRedoButton"));
+        playlist_layout->addLayout(playlist_heading);
+        playlist_status_label_ = new QLabel(playlist_card);
+        playlist_status_label_->setObjectName(QStringLiteral("footnote"));
+        playlist_status_label_->setWordWrap(true);
+        playlist_layout->addWidget(playlist_status_label_);
+        workspace_message_label_ = new QLabel(playlist_card);
+        workspace_message_label_->setObjectName(QStringLiteral("workspaceMessage"));
+        workspace_message_label_->setWordWrap(true);
+        workspace_message_label_->setAccessibleName(QStringLiteral("Workspace status"));
+        playlist_layout->addWidget(workspace_message_label_);
+        playlist_ = new PlaylistWidget(note_editor_, playlist_card);
+        playlist_->setObjectName(QStringLiteral("playlist"));
+        playlist_->setMinimumHeight(360);
+        playlist_layout->addWidget(playlist_, 1);
+        page->addWidget(playlist_card, 1);
         shell->addLayout(page, 1);
         window_->setCentralWidget(root);
 
         window_->setStyleSheet(QStringLiteral(R"(
             #root { background: #f4f4f5; color: #0b0b0b; }
+            QDialog { background: #f4f4f5; }
             #rail { background: #080808; border-radius: 22px; }
             #logo { color: white; font-size: 30px; font-weight: 900; }
             #railItem { color: #a6a6a6; font-size: 17px; padding: 13px; }
@@ -423,11 +659,17 @@ private:
             #primaryButton { background: #080808; color: white; border: 1px solid #080808; }
             #stopButton { background: #e34848; color: white; border: 1px solid #e34848; }
             #secondaryButton { background: white; color: #080808; border: 1px solid #cfcfcf; }
+            #openProjectButton, #saveProjectButton { background: white; color: #080808; border: 1px solid #cfcfcf; }
+            #midiPlayButton { background: #080808; color: white; border: 1px solid #080808; }
+            #magnetButton { background: white; color: #080808; border: 1px solid #8f9690; }
+            #magnetButton:checked { background: #31483a; color: white; border-color: #31483a; }
             QPushButton:disabled { background: #e8e8e8; color: #999; border-color: #ddd; }
             #metricCard { background: #f4f4f5; border-radius: 10px; }
             #metricLabel { color: #888; font-size: 9px; font-weight: 800; }
             #metricValue { color: #0b0b0b; font-size: 15px; font-weight: 800; }
             #footnote { color: #888; font-size: 11px; }
+            #workspaceMessage { background: #f3f3f4; color: #555; border-radius: 7px; padding: 8px 10px; font-size: 11px; }
+            #scaleGuidance { background: #eef3ef; color: #334238; border-radius: 7px; padding: 7px 10px; font-size: 11px; }
             #workflowActive { background: #080808; color: white; border-radius: 9px; padding: 6px; font-weight: 800; }
             #workflowNumber { background: #ededed; color: #777; border-radius: 9px; padding: 6px; font-weight: 800; }
             #workflowTitle { color: #111; font-size: 14px; font-weight: 800; }
@@ -436,9 +678,26 @@ private:
             #darkCopy { color: #c7c7c7; font-size: 12px; }
             QProgressBar { background: #ededed; border: 0; border-radius: 5px; height: 10px; text-align: center; color: #555; }
             QProgressBar::chunk { background: #080808; border-radius: 5px; }
-            QTableWidget { background: #fafafa; border: 1px solid #e1e1e1; border-radius: 8px; gridline-color: #ededed; }
-            QHeaderView::section { background: #f0f0f0; border: 0; padding: 5px; font-weight: 700; }
+            QAbstractScrollArea { background: white; border: 1px solid #dedee1; border-radius: 9px; }
+            #openRecorderButton, #openPianoRollButton, #openPitchLabButton,
+            #addTrackButton, #duplicateRegionButton, #deleteRegionButton,
+            #playlistUndoButton, #playlistRedoButton {
+                background: white; color: #080808; border: 1px solid #cfcfcf;
+            }
+            #openRecorderButton { background: #080808; color: white; border-color: #080808; }
+            #primaryButton:disabled, #stopButton:disabled, #secondaryButton:disabled,
+            #midiPlayButton:disabled, #openProjectButton:disabled, #saveProjectButton:disabled,
+            #addTrackButton:disabled, #duplicateRegionButton:disabled, #deleteRegionButton:disabled,
+            #playlistUndoButton:disabled, #playlistRedoButton:disabled {
+                background: #e8e8e8; color: #999; border-color: #ddd;
+            }
         )"));
+    }
+
+    void showFeature(QDialog* dialog) {
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
     }
 
     QLabel* addMetric(QHBoxLayout* row, const QString& name) {
@@ -671,17 +930,21 @@ private:
         updateUi();
     }
 
-    void clearPhraseConversion(const QString& message) {
+    void clearPhraseConversion(const QString& message, const bool clear_editor) {
         last_conversion_.reset();
-        phrase_table_->setRowCount(0);
         phrase_progress_->setValue(0);
         phrase_status_label_->setText(message);
+        if (clear_editor) {
+            static_cast<void>(note_editor_.replaceAll({}));
+            piano_roll_->refresh(true);
+            updateEditorUi();
+        }
     }
 
     void beginPhraseConversion() {
         const auto recording = recorder_.recording();
         if (!recording || recording->sampleCount() == 0) {
-            clearPhraseConversion(QStringLiteral(
+            phrase_status_label_->setText(QStringLiteral(
                 "No captured samples are available for conversion."));
             updateUi();
             return;
@@ -689,46 +952,57 @@ private:
         if (phrase_processor_.isBusy()) {
             return;
         }
-        clearPhraseConversion(QStringLiteral(
+        stopMelodyPlayback(QStringLiteral(
+            "Melody playback stopped while the recording is re-transcribed."));
+        phrase_progress_->setValue(0);
+        phrase_status_label_->setText(QStringLiteral(
             "Analyzing the saved audio after recording… 0%"));
+        const auto conversion_track = playlist_->selectedTrack();
+        double conversion_offset = 0.0;
+        for (const auto& region : note_editor_.regions()) {
+            if (region.track == conversion_track) {
+                for (const auto index : region.note_indices) {
+                    const auto& note = note_editor_.notes()[index];
+                    conversion_offset = std::max(conversion_offset, note.start_seconds + note.duration_seconds);
+                }
+            }
+        }
         if (!phrase_processor_.convert(
                 recording,
                 pitchConfig(),
                 core::NoteExtractionConfig{},
-                core::kDefaultTempoBpm,
+                tempo_spin_->value(),
                 core::kDefaultTicksPerQuarter,
-                [this](PhraseWorkerResult result) {
+                [this, conversion_track, conversion_offset](PhraseWorkerResult result) {
                     phrase_progress_->setValue(100);
                     last_conversion_ = std::move(result.conversion);
-                    phrase_table_->setRowCount(static_cast<int>(last_conversion_->notes.size()));
-                    for (std::size_t row = 0; row < last_conversion_->notes.size(); ++row) {
-                        const auto& note = last_conversion_->notes[row];
-                        const auto values = std::array<QString, 4>{
-                            QString::fromStdString(core::midiNoteName(note.pitch)),
-                            QStringLiteral("%1 s").arg(note.start_seconds, 0, 'f', 3),
-                            QStringLiteral("%1 s").arg(note.duration_seconds, 0, 'f', 3),
-                            QString::number(note.velocity),
-                        };
-                        for (int column = 0; column < static_cast<int>(values.size()); ++column) {
-                            auto* item = new QTableWidgetItem(values[static_cast<std::size_t>(column)]);
-                            item->setTextAlignment(Qt::AlignCenter);
-                            phrase_table_->setItem(static_cast<int>(row), column, item);
-                        }
-                    }
-
                     if (last_conversion_->status == core::PhraseConversionStatus::success) {
+                        const auto added = note_editor_.appendRegion(last_conversion_->notes,
+                            conversion_offset, conversion_track);
+                        if (added != core::NoteEditResult::applied) {
+                            phrase_status_label_->setText(QStringLiteral("The converted phrase could not be added safely. Existing regions are unchanged."));
+                            workspace_message_label_->setText(phrase_status_label_->text());
+                            updateEditorUi(); updateUi(); return;
+                        }
+                        piano_roll_->refresh(true);
+                        markDirty();
                         phrase_status_label_->setText(QStringLiteral(
-                            "%1 note event(s) · %2 raw frames · %3 ms processing. Original timing retained.")
+                            "%1 detected note(s) · %2 raw frames · %3 ms. A new region is ready in the Playlist.")
                             .arg(last_conversion_->notes.size())
                             .arg(last_conversion_->raw_pitch_frames.size())
                             .arg(result.processing_milliseconds, 0, 'f', 1));
+                    } else if (last_conversion_->status == core::PhraseConversionStatus::empty) {
+                        phrase_status_label_->setText(QStringLiteral("No notes found; existing Playlist regions are retained: %1")
+                            .arg(QString::fromStdString(last_conversion_->message)));
                     } else {
                         phrase_status_label_->setText(QStringLiteral("%1: %2")
                             .arg(QString::fromLatin1(core::phraseConversionStatusText(
                                 last_conversion_->status)))
                             .arg(QString::fromStdString(last_conversion_->message)));
                     }
+                    updateEditorUi();
                     updateUi();
+                    workspace_message_label_->setText(phrase_status_label_->text());
                 })) {
             phrase_status_label_->setText(QStringLiteral(
                 "A phrase conversion is already running."));
@@ -743,13 +1017,238 @@ private:
         phrase_processor_.cancel();
         phrase_status_label_->setText(QStringLiteral(
             "Conversion cancelled. The original recording remains in memory."));
+        workspace_message_label_->setText(phrase_status_label_->text());
+        updateUi();
+    }
+
+    [[nodiscard]] core::ProjectDocument currentProjectDocument() const {
+        core::ProjectDocument project;
+        project.tempo_bpm = tempo_spin_->value();
+        project.ticks_per_quarter = core::kDefaultTicksPerQuarter;
+        project.root_pitch_class = static_cast<std::uint8_t>(
+            root_pitch_combo_->currentData().toUInt());
+        project.scale_mode = selectedScaleMode();
+        project.magnet_enabled = note_editor_.magnetEnabled();
+        project.rhythm_snap = piano_roll_->rhythmSnap();
+        project.canonical_notes = note_editor_.notes();
+        project.playlist_regions = note_editor_.regions();
+        project.track_count = note_editor_.trackCount();
+        return project;
+    }
+
+    void markDirty() {
+        if (applying_project_) {
+            return;
+        }
+        dirty_ = true;
+        updateWindowTitle();
+    }
+
+    void updateWindowTitle() {
+        const auto name = project_path_.isEmpty()
+            ? QStringLiteral("Untitled project") : QFileInfo(project_path_).fileName();
+        if (project_name_label_) {
+            project_name_label_->setText(QStringLiteral("%1%2")
+                .arg(name)
+                .arg(dirty_ ? QStringLiteral(" · Unsaved") : QString{}));
+        }
+        window_->setWindowTitle(QStringLiteral("%1%2 — Hum-to-MIDI Music Sketchpad")
+            .arg(name)
+            .arg(dirty_ ? QStringLiteral(" *") : QString{}));
+    }
+
+    [[nodiscard]] bool saveProjectAs() {
+        auto destination = QFileDialog::getSaveFileName(
+            window_,
+            QStringLiteral("Save Hum-to-MIDI project"),
+            project_path_.isEmpty() ? QStringLiteral("untitled.humproj") : project_path_,
+            QStringLiteral("Hum-to-MIDI projects (*.humproj)"));
+        if (destination.isEmpty()) {
+            return false;
+        }
+        if (!destination.endsWith(QStringLiteral(".humproj"), Qt::CaseInsensitive)) {
+            destination += QStringLiteral(".humproj");
+        }
+        const auto result = ProjectFileStore::save(destination, currentProjectDocument());
+        if (!result) {
+            QMessageBox::critical(window_, QStringLiteral("Project save failed"), result.message);
+            phrase_status_label_->setText(result.message);
+            return false;
+        }
+        project_path_ = destination;
+        dirty_ = false;
+        updateWindowTitle();
+        phrase_status_label_->setText(QStringLiteral(
+            "Project saved safely: %1. Editable notes and settings are stored; the original recording remains session-only and is not embedded.")
+            .arg(destination));
+        workspace_message_label_->setText(phrase_status_label_->text());
+        return true;
+    }
+
+    [[nodiscard]] bool saveProject() {
+        if (project_path_.isEmpty()) {
+            return saveProjectAs();
+        }
+        const auto result = ProjectFileStore::save(project_path_, currentProjectDocument());
+        if (!result) {
+            QMessageBox::critical(window_, QStringLiteral("Project save failed"), result.message);
+            phrase_status_label_->setText(result.message);
+            return false;
+        }
+        dirty_ = false;
+        updateWindowTitle();
+        phrase_status_label_->setText(QStringLiteral(
+            "Project saved safely: %1. Original audio is not embedded.").arg(project_path_));
+        workspace_message_label_->setText(phrase_status_label_->text());
+        return true;
+    }
+
+    [[nodiscard]] bool confirmDiscardChanges(const QString& action) {
+        if (!dirty_) {
+            return true;
+        }
+        const auto choice = QMessageBox::warning(
+            window_,
+            QStringLiteral("Unsaved project changes"),
+            QStringLiteral("Save your editable notes and settings before you %1?\n\n"
+                "Project files do not include the in-memory original recording.").arg(action),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (choice == QMessageBox::Save) {
+            return saveProject();
+        }
+        return choice == QMessageBox::Discard;
+    }
+
+    void loadProject() {
+        if (!confirmDiscardChanges(QStringLiteral("open another project"))) {
+            return;
+        }
+        const auto source = QFileDialog::getOpenFileName(
+            window_,
+            QStringLiteral("Open Hum-to-MIDI project"),
+            {},
+            QStringLiteral("Hum-to-MIDI projects (*.humproj)"));
+        if (source.isEmpty()) {
+            return;
+        }
+        const auto loaded = ProjectFileStore::load(source);
+        if (!loaded) {
+            const auto title = loaded.status == ProjectStoreStatus::unsupported_version
+                ? QStringLiteral("Unsupported project version")
+                : QStringLiteral("Project could not be opened");
+            QMessageBox::critical(window_, title, loaded.message);
+            phrase_status_label_->setText(loaded.message);
+            return;
+        }
+
+        stopMelodyPlayback();
+        playback_.stop();
+        pitch_processor_.cancel();
+        phrase_processor_.cancel();
+        applying_project_ = true;
+        const auto& project = *loaded.project;
+        {
+            const QSignalBlocker root_blocker(root_pitch_combo_);
+            const QSignalBlocker scale_blocker(scale_mode_combo_);
+            const QSignalBlocker magnet_blocker(magnet_button_);
+            const QSignalBlocker snap_blocker(rhythm_snap_combo_);
+            const QSignalBlocker tempo_blocker(tempo_spin_);
+            root_pitch_combo_->setCurrentIndex(root_pitch_combo_->findData(project.root_pitch_class));
+            scale_mode_combo_->setCurrentIndex(scale_mode_combo_->findData(
+                static_cast<int>(project.scale_mode)));
+            magnet_button_->setChecked(project.magnet_enabled);
+            auto snap_index = 0;
+            if (project.rhythm_snap.enabled) {
+                snap_index = rhythm_snap_combo_->findData(project.rhythm_snap.interval_seconds);
+                if (snap_index < 0) {
+                    rhythm_snap_combo_->addItem(
+                        QStringLiteral("Custom · %1 s").arg(
+                            project.rhythm_snap.interval_seconds, 0, 'f', 3),
+                        project.rhythm_snap.interval_seconds);
+                    snap_index = rhythm_snap_combo_->count() - 1;
+                }
+            }
+            rhythm_snap_combo_->setCurrentIndex(snap_index);
+            tempo_spin_->setValue(project.tempo_bpm);
+        }
+        static_cast<void>(note_editor_.setScale(core::makeScaleDefinition(
+            project.root_pitch_class, project.scale_mode)));
+        note_editor_.setMagnetEnabled(project.magnet_enabled);
+        static_cast<void>(note_editor_.replaceAll(project.canonical_notes,
+            project.playlist_regions, project.track_count));
+        piano_roll_->setRhythmSnap(project.rhythm_snap);
+        playlist_->setRhythmSnap(project.rhythm_snap);
+        piano_roll_->refresh(true);
+        static_cast<void>(recorder_.clearRecording());
+        updateMetadata();
+        last_conversion_.reset();
+        project_path_ = source;
+        dirty_ = false;
+        applying_project_ = false;
+        phrase_progress_->setValue(0);
+        phrase_status_label_->setText(QStringLiteral(
+            "Project loaded: %1. Its canonical notes and settings are editable. Original audio is omitted by the project format, so Play original is unavailable.")
+            .arg(source));
+        updateScaleGuidanceUi();
+        updateEditorUi();
+        updateWindowTitle();
+        updateUi();
+        workspace_message_label_->setText(phrase_status_label_->text());
+    }
+
+    void stopMelodyPlayback(const QString& message = {}) {
+        const auto was_active = midi_playback_.isPlaying() || midi_playback_.isPreparing();
+        midi_playback_.stop();
+        piano_roll_->setPlayheadSeconds(std::nullopt);
+        playlist_->setPlayheadSeconds(std::nullopt);
+        if (was_active && !message.isEmpty()) {
+            editor_status_label_->setText(message);
+            workspace_message_label_->setText(message);
+        }
+    }
+
+    void toggleMidiPlayback() {
+        if (midi_playback_.isPlaying() || midi_playback_.isPreparing()) {
+            stopMelodyPlayback(QStringLiteral("Melody playback stopped. No notes remain sounding."));
+            updateUi();
+            return;
+        }
+        if (note_editor_.projectedNotes().empty()) {
+            editor_status_label_->setText(QStringLiteral(
+                "Add or convert at least one note before playing the melody."));
+            return;
+        }
+        playback_.stop();
+        midi_playback_.play(note_editor_.projectedNotes(),
+            [this](const QString& message, const bool error) {
+                editor_status_label_->setText(message);
+                workspace_message_label_->setText(message);
+                if (!midi_playback_.isPlaying() && !midi_playback_.isPreparing()) {
+                    piano_roll_->setPlayheadSeconds(std::nullopt);
+                    playlist_->setPlayheadSeconds(std::nullopt);
+                }
+                if (error) {
+                    setStatus(message, true);
+                }
+                updateUi();
+            });
+        piano_roll_->setPlayheadSeconds(0.0);
+        playlist_->setPlayheadSeconds(0.0);
         updateUi();
     }
 
     void exportMidi() {
-        if (!last_conversion_ || !last_conversion_->hasNotes()) {
+        if (note_editor_.notes().empty()) {
             phrase_status_label_->setText(QStringLiteral(
-                "Convert a phrase with at least one reliable note before exporting."));
+                "Add or convert at least one valid note before exporting."));
+            return;
+        }
+        const auto sequence = core::MidiTimeline::fromTimedNotes(
+            note_editor_.projectedNotes(), tempo_spin_->value(), core::kDefaultTicksPerQuarter);
+        if (!sequence) {
+            phrase_status_label_->setText(QStringLiteral(
+                "The edited notes could not be represented safely as MIDI."));
             return;
         }
         auto destination = QFileDialog::getSaveFileName(
@@ -766,14 +1265,29 @@ private:
         }
         core::StandardMidiFileExporter exporter;
         const auto status = exporter.exportFile(
-            last_conversion_->midi_sequence,
+            *sequence,
             std::filesystem::path(destination.toStdU16String()));
-        phrase_status_label_->setText(status == core::ServiceStatus::ok
-            ? QStringLiteral("MIDI file saved locally: %1").arg(destination)
-            : QStringLiteral("MIDI export failed. Check the destination and try again."));
+        if (status == core::ServiceStatus::ok) {
+            phrase_status_label_->setText(note_editor_.magnetEnabled()
+                ? QStringLiteral("MIDI note instructions saved at %1 BPM with the audible/visible %2 Magnet pitches: %3. This file contains no instrument audio; canonical pitches are retained.")
+                    .arg(tempo_spin_->value(), 0, 'f', 1)
+                    .arg(selectedScaleName())
+                    .arg(destination)
+                : QStringLiteral("MIDI note instructions saved at %1 BPM with the audible/visible canonical pitches: %2. This file contains no built-in instrument audio.")
+                    .arg(tempo_spin_->value(), 0, 'f', 1)
+                    .arg(destination));
+        } else {
+            phrase_status_label_->setText(QStringLiteral(
+                "MIDI export failed. Check the destination and try again."));
+        }
+        workspace_message_label_->setText(phrase_status_label_->text());
     }
 
     void wireEvents() {
+        QObject::connect(open_project_button_, &QPushButton::clicked, window_, [this] { loadProject(); });
+        QObject::connect(save_project_button_, &QPushButton::clicked, window_, [this] {
+            static_cast<void>(saveProject());
+        });
         QObject::connect(record_button_, &QPushButton::clicked, window_, [this] { startRecording(); });
         QObject::connect(stop_button_, &QPushButton::clicked, window_, [this] { stopRecording(); });
         QObject::connect(play_button_, &QPushButton::clicked, window_, [this] { togglePlayback(); });
@@ -785,6 +1299,86 @@ private:
             [this] { cancelPhraseConversion(); });
         QObject::connect(export_button_, &QPushButton::clicked, window_,
             [this] { exportMidi(); });
+        QObject::connect(midi_play_button_, &QPushButton::clicked, window_,
+            [this] { toggleMidiPlayback(); });
+        QObject::connect(undo_button_, &QPushButton::clicked, window_,
+            [this] { piano_roll_->undo(); });
+        QObject::connect(redo_button_, &QPushButton::clicked, window_,
+            [this] { piano_roll_->redo(); });
+        QObject::connect(playlist_undo_button_, &QPushButton::clicked, window_, [this] { piano_roll_->undo(); });
+        QObject::connect(playlist_redo_button_, &QPushButton::clicked, window_, [this] { piano_roll_->redo(); });
+        QObject::connect(duplicate_region_button_, &QPushButton::clicked, window_, [this] { playlist_->duplicateSelected(); });
+        QObject::connect(delete_region_button_, &QPushButton::clicked, window_, [this] { playlist_->deleteSelected(); });
+        QObject::connect(add_track_button_, &QPushButton::clicked, window_, [this] {
+            if (note_editor_.addTrack() == core::NoteEditResult::applied) {
+                markDirty(); updateEditorUi(); updateUi();
+            }
+        });
+        QObject::connect(add_note_button_, &QPushButton::clicked, window_,
+            [this] {
+                showFeature(piano_dialog_);
+                piano_roll_->addNoteAtViewportCenter();
+            });
+        QObject::connect(delete_note_button_, &QPushButton::clicked, window_,
+            [this] { piano_roll_->deleteSelected(); });
+        QObject::connect(root_pitch_combo_, &QComboBox::currentIndexChanged, window_,
+            [this](const int) { applyScaleSettings(); });
+        QObject::connect(scale_mode_combo_, &QComboBox::currentIndexChanged, window_,
+            [this](const int) { applyScaleSettings(); });
+        QObject::connect(magnet_button_, &QPushButton::toggled, window_,
+            [this](const bool enabled) {
+                stopMelodyPlayback(QStringLiteral(
+                    "Melody playback stopped because the audible pitch projection changed."));
+                note_editor_.setMagnetEnabled(enabled);
+                piano_roll_->refresh();
+                updateScaleGuidanceUi();
+                updateEditorUi();
+                markDirty();
+                updateUi();
+            });
+        QObject::connect(horizontal_zoom_slider_, &QSlider::valueChanged, window_,
+            [this](const int value) {
+                piano_roll_->setHorizontalZoom(value);
+                playlist_->setHorizontalZoom(value);
+            });
+        QObject::connect(vertical_zoom_slider_, &QSlider::valueChanged, window_,
+            [this](const int value) { piano_roll_->setVerticalZoom(value); });
+        QObject::connect(rhythm_snap_combo_, &QComboBox::currentIndexChanged, window_,
+            [this](const int index) {
+                const auto interval = rhythm_snap_combo_->itemData(index).toDouble();
+                piano_roll_->setRhythmSnap({index > 0, interval > 0.0 ? interval : 0.125});
+                playlist_->setRhythmSnap(piano_roll_->rhythmSnap());
+                editor_status_label_->setText(index == 0
+                    ? QStringLiteral("Rhythm snap is off; captured timing is preserved.")
+                    : QStringLiteral("Rhythm snap affects time only. It is separate from Magnet pitch guidance."));
+                markDirty();
+            });
+        QObject::connect(tempo_spin_, &QDoubleSpinBox::valueChanged, window_,
+            [this](const double value) {
+                playlist_->setTempo(value);
+                markDirty();
+            });
+        playlist_->setOpenEditorCallback([this] {
+            showFeature(piano_dialog_);
+            piano_roll_->refresh(true);
+            piano_roll_->setFocus();
+        });
+        playlist_->setDocumentChangedCallback([this] {
+            stopMelodyPlayback(QStringLiteral("Playback stopped because the arrangement changed."));
+            piano_roll_->refresh(); markDirty(); updateEditorUi(); updateUi();
+        });
+        playlist_->setSelectionChangedCallback([this] { updateEditorUi(); updateUi(); });
+        piano_roll_->setDocumentChangedCallback([this] {
+            stopMelodyPlayback(QStringLiteral(
+                "Melody playback stopped because a note changed."));
+            markDirty();
+            updateEditorUi();
+            updateUi();
+        });
+        piano_roll_->setSelectionChangedCallback([this] { updateEditorUi(); });
+        piano_roll_->setStatusCallback([this](const QString& message) {
+            editor_status_label_->setText(message);
+        });
         QObject::connect(refresh_button_, &QPushButton::clicked, window_, [this] {
             if (recorder_.state() == core::RecordingState::error) {
                 static_cast<void>(recorder_.acknowledgeError());
@@ -857,6 +1451,7 @@ private:
     }
 
     void startRecording() {
+        stopMelodyPlayback();
         playback_.stop();
         if (recorder_.state() == core::RecordingState::error) {
             static_cast<void>(recorder_.acknowledgeError());
@@ -870,7 +1465,7 @@ private:
         case core::StartRecordingResult::started:
             phrase_processor_.cancel();
             clearPhraseConversion(QStringLiteral(
-                "Recording in progress. Conversion begins after Stop."));
+                "Recording in progress. After Stop, conversion adds a new region; existing regions are retained."), false);
             resetPitchAnalysis(false);
             level_meter_->setLevel(0.0F, false);
             clip_label_->setVisible(false);
@@ -935,6 +1530,7 @@ private:
             updateUi();
             return;
         }
+        stopMelodyPlayback();
         playback_.play(recorder_.recording(), [this](const QString& message, const bool error) {
             setStatus(message, error);
             updateUi();
@@ -972,6 +1568,11 @@ private:
             phrase_progress_->setValue(percent);
             phrase_status_label_->setText(QStringLiteral(
                 "Analyzing the saved audio after recording… %1%").arg(percent));
+            workspace_message_label_->setText(phrase_status_label_->text());
+        }
+        if (midi_playback_.isPlaying()) {
+            piano_roll_->setPlayheadSeconds(midi_playback_.positionSeconds(), true);
+            playlist_->setPlayheadSeconds(midi_playback_.positionSeconds(), true);
         }
         updateUi();
     }
@@ -979,6 +1580,7 @@ private:
     void updateMetadata() {
         const auto recording = recorder_.recording();
         if (!recording) {
+            clip_label_->hide();
             sample_rate_value_->setText(QStringLiteral("—"));
             channels_value_->setText(QStringLiteral("—"));
             samples_value_->setText(QStringLiteral("—"));
@@ -992,6 +1594,99 @@ private:
         clip_label_->setVisible(recording->peakLevel() >= 0.98F);
     }
 
+    [[nodiscard]] core::ScaleMode selectedScaleMode() const noexcept {
+        return static_cast<core::ScaleMode>(scale_mode_combo_->currentData().toInt());
+    }
+
+    [[nodiscard]] QString selectedScaleName() const {
+        return QStringLiteral("%1 %2")
+            .arg(root_pitch_combo_->currentText())
+            .arg(QString::fromStdString(std::string(core::scaleModeName(selectedScaleMode()))));
+    }
+
+    void applyScaleSettings() {
+        stopMelodyPlayback(QStringLiteral(
+            "Melody playback stopped because the key or scale changed."));
+        const auto root = static_cast<std::uint8_t>(root_pitch_combo_->currentData().toUInt());
+        static_cast<void>(note_editor_.setScale(
+            core::makeScaleDefinition(root, selectedScaleMode())));
+        piano_roll_->refresh();
+        updateScaleGuidanceUi();
+        updateEditorUi();
+        markDirty();
+        updateUi();
+    }
+
+    void updateScaleGuidanceUi() {
+        const auto enabled = note_editor_.magnetEnabled();
+        magnet_button_->setChecked(enabled);
+        magnet_button_->setText(enabled
+            ? QStringLiteral("Magnet ON") : QStringLiteral("Magnet OFF"));
+        scale_guidance_label_->setText(enabled
+            ? QStringLiteral("%1 Magnet view is ON. Closest scale pitches are shown and exported; your original/manual pitches remain underneath. Key selection does not transpose the melody.")
+                .arg(selectedScaleName())
+            : QStringLiteral("%1 guides pitch only. Key selection does not transpose the melody. Magnet is OFF, so original/manual pitches are shown and exported.")
+                .arg(selectedScaleName()));
+    }
+
+    void updateEditorUi() {
+        playlist_->setTempo(tempo_spin_->value());
+        playlist_->refresh();
+        playlist_status_label_->setText(QStringLiteral(
+            "%1 track(s) · %2 region(s) · %3 notes · New takes go to Track %4. Drag regions to arrange; double-click to correct notes. %5 · Magnet %6.")
+            .arg(note_editor_.trackCount()).arg(note_editor_.regions().size())
+            .arg(note_editor_.notes().size()).arg(playlist_->selectedTrack() + 1)
+            .arg(selectedScaleName()).arg(note_editor_.magnetEnabled() ? QStringLiteral("ON") : QStringLiteral("OFF")));
+        undo_button_->setEnabled(note_editor_.canUndo());
+        redo_button_->setEnabled(note_editor_.canRedo());
+        undo_button_->setText(note_editor_.canUndo()
+            ? QStringLiteral("Undo %1").arg(QString::fromStdString(note_editor_.undoLabel()).toLower())
+            : QStringLiteral("Undo"));
+        redo_button_->setText(note_editor_.canRedo()
+            ? QStringLiteral("Redo %1").arg(QString::fromStdString(note_editor_.redoLabel()).toLower())
+            : QStringLiteral("Redo"));
+        delete_note_button_->setEnabled(note_editor_.selectedIndex().has_value());
+
+        const auto* selected = note_editor_.selectedNote();
+        if (selected) {
+            const auto visible_pitch = note_editor_.projectedPitch(selected->pitch);
+            const auto pitch_guidance = note_editor_.pitchIsInScale(selected->pitch)
+                ? QStringLiteral("IN %1").arg(selectedScaleName())
+                : (note_editor_.magnetEnabled()
+                    ? QStringLiteral("original %1 → Magnet %2 in %3; original retained")
+                        .arg(QString::fromStdString(core::midiNoteName(selected->pitch)))
+                        .arg(QString::fromStdString(core::midiNoteName(visible_pitch)))
+                        .arg(selectedScaleName())
+                    : QStringLiteral("OUTSIDE %1; Magnet OFF preserves it")
+                        .arg(selectedScaleName()));
+            editor_status_label_->setText(QStringLiteral(
+                "Selected %1 · %2 · starts %3 s · lasts %4 s · velocity %5.")
+                .arg(QString::fromStdString(core::midiNoteName(visible_pitch)))
+                .arg(pitch_guidance)
+                .arg(selected->start_seconds, 0, 'f', 3)
+                .arg(selected->duration_seconds, 0, 'f', 3)
+                .arg(selected->velocity));
+        } else if (note_editor_.notes().empty()) {
+            editor_status_label_->setText(QStringLiteral(
+                "No melody notes yet. Record a phrase or double-click the grid to add one."));
+        } else {
+            const auto overlaps = note_editor_.overlapCount();
+            const auto outside = static_cast<std::size_t>(std::count_if(
+                note_editor_.notes().cbegin(), note_editor_.notes().cend(),
+                [this](const core::TimedMidiNote& note) {
+                    return !note_editor_.pitchIsInScale(note.pitch);
+                }));
+            editor_status_label_->setText(QStringLiteral(
+                "%1 editable note(s) · %2 outside %3%4. Click a block to select it; double-click empty space to add.")
+                .arg(note_editor_.notes().size())
+                .arg(outside)
+                .arg(selectedScaleName())
+                .arg(overlaps > 0
+                    ? QStringLiteral(" · %1 preserved overlap(s)").arg(overlaps)
+                    : QString{}));
+        }
+    }
+
     void updateUi() {
         const auto state = recorder_.state();
         const auto recording_active = state == core::RecordingState::recording
@@ -1001,11 +1696,15 @@ private:
             && state != core::RecordingState::closed
             && capture_.permissionStatus() == core::PermissionStatus::granted
             && device_combo_->count() > 0;
+        open_recorder_button_->setText(recording_active
+            ? QStringLiteral("●  Recording… open controls") : QStringLiteral("●  Hum → MIDI"));
         record_button_->setEnabled(can_record);
         stop_button_->setEnabled(state == core::RecordingState::recording);
         device_combo_->setEnabled(!recording_active);
         refresh_button_->setEnabled(!recording_active);
         permission_button_->setEnabled(!recording_active);
+        open_project_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        save_project_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
 
         const auto recording = recorder_.recording();
         const auto has_audio = recording && recording->sampleCount() > 0;
@@ -1019,10 +1718,37 @@ private:
         cancel_conversion_button_->setEnabled(phrase_processor_.isBusy());
         export_button_->setEnabled(
             !recording_active && !phrase_processor_.isBusy()
-            && last_conversion_ && last_conversion_->hasNotes());
+            && !note_editor_.notes().empty());
+        midi_play_button_->setEnabled(
+            !recording_active && !phrase_processor_.isBusy()
+            && !note_editor_.notes().empty());
+        midi_play_button_->setText(midi_playback_.isPlaying() || midi_playback_.isPreparing()
+            ? QStringLiteral("■  Stop melody") : QStringLiteral("▶  Play melody"));
+        add_note_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        delete_note_button_->setEnabled(
+            !recording_active && !phrase_processor_.isBusy()
+            && note_editor_.selectedIndex().has_value());
+        undo_button_->setEnabled(
+            !recording_active && !phrase_processor_.isBusy() && note_editor_.canUndo());
+        redo_button_->setEnabled(
+            !recording_active && !phrase_processor_.isBusy() && note_editor_.canRedo());
+        piano_roll_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        const auto can_arrange = !recording_active && !phrase_processor_.isBusy();
+        playlist_->setEnabled(can_arrange);
+        add_track_button_->setEnabled(can_arrange && note_editor_.trackCount() < 16);
+        duplicate_region_button_->setEnabled(can_arrange && playlist_->selectedRegion().has_value());
+        delete_region_button_->setEnabled(can_arrange && playlist_->selectedRegion().has_value());
+        playlist_undo_button_->setEnabled(can_arrange && note_editor_.canUndo());
+        playlist_redo_button_->setEnabled(can_arrange && note_editor_.canRedo());
+        root_pitch_combo_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        scale_mode_combo_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        magnet_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        rhythm_snap_combo_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        tempo_spin_->setEnabled(!recording_active && !phrase_processor_.isBusy());
     }
 
     void setStatus(const QString& text, const bool error) {
+        if (workspace_message_label_) { workspace_message_label_->setText(text); }
         status_label_->setText(text);
         status_label_->setProperty("error", error);
         status_label_->style()->unpolish(status_label_);
@@ -1033,10 +1759,15 @@ private:
     QtAudioCapture capture_;
     core::RecordingController recorder_;
     QtAudioPlayback playback_;
+    QtMidiPlayback midi_playback_;
     PitchLabProcessor pitch_processor_;
     PhraseConversionProcessor phrase_processor_;
     core::PitchSmoother pitch_smoother_;
+    core::NoteEditor note_editor_;
     QTimer monitor_;
+    QLabel* project_name_label_{nullptr};
+    QPushButton* open_project_button_{nullptr};
+    QPushButton* save_project_button_{nullptr};
     QComboBox* device_combo_{nullptr};
     QPushButton* refresh_button_{nullptr};
     QPushButton* permission_button_{nullptr};
@@ -1065,13 +1796,42 @@ private:
     QPushButton* replay_analysis_button_{nullptr};
     QLabel* phrase_status_label_{nullptr};
     QProgressBar* phrase_progress_{nullptr};
-    QTableWidget* phrase_table_{nullptr};
     QPushButton* convert_button_{nullptr};
     QPushButton* cancel_conversion_button_{nullptr};
     QPushButton* export_button_{nullptr};
+    QPushButton* midi_play_button_{nullptr};
+    PianoRollWidget* piano_roll_{nullptr};
+    PlaylistWidget* playlist_{nullptr};
+    QDialog* recording_dialog_{nullptr};
+    QDialog* piano_dialog_{nullptr};
+    QDialog* pitch_dialog_{nullptr};
+    QLabel* playlist_status_label_{nullptr};
+    QLabel* workspace_message_label_{nullptr};
+    QPushButton* open_recorder_button_{nullptr};
+    QPushButton* add_track_button_{nullptr};
+    QPushButton* duplicate_region_button_{nullptr};
+    QPushButton* delete_region_button_{nullptr};
+    QPushButton* playlist_undo_button_{nullptr};
+    QPushButton* playlist_redo_button_{nullptr};
+    QLabel* editor_status_label_{nullptr};
+    QPushButton* undo_button_{nullptr};
+    QPushButton* redo_button_{nullptr};
+    QPushButton* add_note_button_{nullptr};
+    QPushButton* delete_note_button_{nullptr};
+    QComboBox* root_pitch_combo_{nullptr};
+    QComboBox* scale_mode_combo_{nullptr};
+    QPushButton* magnet_button_{nullptr};
+    QLabel* scale_guidance_label_{nullptr};
+    QComboBox* rhythm_snap_combo_{nullptr};
+    QDoubleSpinBox* tempo_spin_{nullptr};
+    QSlider* horizontal_zoom_slider_{nullptr};
+    QSlider* vertical_zoom_slider_{nullptr};
     std::optional<core::PhraseConversionResult> last_conversion_;
     std::uint64_t next_pitch_frame_{0};
     float displayed_level_{0.0F};
+    QString project_path_;
+    bool dirty_{false};
+    bool applying_project_{false};
     bool closed_{false};
 };
 
@@ -1083,8 +1843,11 @@ MainWindow::MainWindow(QWidget* parent)
 MainWindow::~MainWindow() = default;
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    impl_->shutdown();
-    QMainWindow::closeEvent(event);
+    if (impl_->requestClose()) {
+        event->accept();
+    } else {
+        event->ignore();
+    }
 }
 
 } // namespace hum::app

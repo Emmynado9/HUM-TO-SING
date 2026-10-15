@@ -26,6 +26,14 @@ The repository itself has no owner-selected license yet. No dependency license g
 
 The note-extraction and Standard MIDI File milestone adds only repository-owned C++ code and standard-library use. It reuses the selected local YIN detector and Qt Concurrent worker support, so there is no new package, model, transitive runtime, or license obligation.
 
+The piano-roll milestone also adds only repository-owned C++ and Qt Widgets code. Its offscreen interaction test uses Qt Test from the existing Qt Base distribution under the same Qt licensing choices recorded above; it adds no production runtime dependency, model, service, or network access.
+
+The scale-guidance and reversible Magnet milestone adds only repository-owned standard C++ and Qt Widgets code. It uses the existing interval model and introduces no library, model, API, asset, or additional license obligation.
+
+The single-track MVP adds only repository-owned C++/Qt code. The built-in soft-tone instrument generates sine waves mathematically at runtime, so there is no soundfont, sample library, model, preset, or third-party audio asset to license or download. Project persistence uses Qt Core's `QSaveFile`, already covered by the Qt Base licensing choice above. The Debian package dynamically links system Qt and declares Debian runtime dependencies; it does not copy Qt or FFmpeg libraries into the package.
+
+The repository still has no owner-selected license. The generated package is suitable for controlled evaluation by the copyright holder, but a public source or binary release needs an explicit project license and a final notice/compliance review. The Debian package is unsigned. These are release decisions, not runtime cloud dependencies.
+
 ## Reviewed future dependencies and alternatives
 
 - Spotify Basic Pitch's current repository declares Apache-2.0 and its `NOTICE` lists the separate licenses of its Python/runtime dependencies. Its own README describes a lightweight neural network for file-based, polyphonic automatic music transcription and ships TensorFlow, CoreML, TensorFlow Lite, and ONNX model serializations. It was not adopted for the single-note live diagnostic because the model/runtime and transcription workflow add avoidable packaging and latency complexity. If used for later offline transcription, pin an exact release and re-audit the selected model artifact plus all transitive runtime licenses. Sources checked: https://github.com/spotify/basic-pitch/blob/main/LICENSE, https://github.com/spotify/basic-pitch/blob/main/NOTICE, and https://github.com/spotify/basic-pitch/blob/main/README.md.

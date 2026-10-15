@@ -46,7 +46,7 @@ No scale snapping or rhythmic quantization is applied. Vibrato narrower than the
 ticks = round(seconds × tempo_bpm × ticks_per_quarter / 60)
 ```
 
-The start and end are rounded separately. The current UI exports at 120 BPM and 480 ticks per quarter; a positive sub-tick note receives one tick. Tests cover 60, 120, and 180 BPM. Changing tempo changes tick numbers while round-tripping to the same seconds within one-tick resolution.
+The start and end are rounded separately. The UI defaults to 120 BPM and exports at the user-selected project tempo with 480 ticks per quarter; a positive sub-tick note receives one tick. Tests cover 60, 120, and 180 BPM, and the end-to-end workflow verifies a non-default tempo. Changing tempo changes tick numbers while round-tripping to the same seconds within one-tick resolution.
 
 The file writer emits format 0 with one track, one tempo meta event, sorted note events, and end-of-track. For events on the same tick, note-offs precede note-ons. Tests parse the bytes with a test-only reader that is independent of the writer and verify header fields, tempo, pitches, pairs, and durations.
 
