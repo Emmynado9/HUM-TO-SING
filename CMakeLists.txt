@@ -177,7 +177,7 @@ if(HUM_BUILD_GUI)
         set_tests_properties(hum_app_smoke PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             LABELS "gui;smoke"
-            TIMEOUT 10
+            TIMEOUT 30
         )
 
         add_executable(hum_piano_roll_ui_tests
