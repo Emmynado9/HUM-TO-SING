@@ -68,7 +68,7 @@ fi
 
 source_app="$build_dir/bin/HumToSing.app"
 [[ -x "$source_app/Contents/MacOS/HumToSing" ]] || fail "The build did not produce HumToSing.app."
-/usr/bin/lipo -verify_arch x86_64 "$source_app/Contents/MacOS/HumToSing"
+/usr/bin/lipo "$source_app/Contents/MacOS/HumToSing" -verify_arch x86_64
 "$python" - "$source_app/Contents/Info.plist" <<'PY'
 import plistlib,sys
 with open(sys.argv[1],'rb') as handle: info=plistlib.load(handle)
@@ -94,7 +94,7 @@ for directory,_,files in os.walk(bundle):
         path=os.path.join(directory,name)
         kind=subprocess.check_output(['/usr/bin/file','-b',path],text=True)
         if 'Mach-O' not in kind: continue
-        subprocess.run(['/usr/bin/lipo','-verify_arch','x86_64',path],check=True)
+        subprocess.run(['/usr/bin/lipo',path,'-verify_arch','x86_64'],check=True)
         linked=subprocess.check_output(['/usr/bin/otool','-L',path],text=True)
         rpaths=subprocess.check_output(['/usr/bin/otool','-l',path],text=True)
         # The first otool -L line names this binary itself, not a dependency.
@@ -109,7 +109,7 @@ mkdir -p "$staged_app/Contents/Resources/Documentation"
 # Ad-hoc signing is free, local, and is not Apple Developer ID notarization.
 /usr/bin/codesign --force --deep --sign - "$staged_app"
 /usr/bin/codesign --verify --deep --strict "$staged_app"
-/usr/bin/lipo -verify_arch x86_64 "$staged_app/Contents/MacOS/HumToSing"
+/usr/bin/lipo "$staged_app/Contents/MacOS/HumToSing" -verify_arch x86_64
 # Exercise the deployed app without developer Qt environment variables.
 (
     unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH
