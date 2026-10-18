@@ -180,6 +180,49 @@ NoteEditResult NoteEditor::setTrackInstrument(const std::size_t track, const Ins
     return commit(std::move(next), "Change track instrument");
 }
 
+NoteEditResult NoteEditor::setTrackKind(const std::size_t track, const TrackKind kind) {
+    if (track >= state_.tracks.size() || (kind != TrackKind::melody && kind != TrackKind::chords)) {
+        return NoteEditResult::invalid_index;
+    }
+    auto next = state_;
+    next.tracks[track].kind = kind;
+    return commit(std::move(next), "Change track type");
+}
+
+NoteEditResult NoteEditor::setTrackMuted(const std::size_t track, const bool muted) {
+    if (track >= state_.tracks.size()) { return NoteEditResult::invalid_index; }
+    auto next = state_;
+    next.tracks[track].muted = muted;
+    return commit(std::move(next), muted ? "Mute track" : "Unmute track");
+}
+
+std::optional<std::size_t> NoteEditor::trackForNote(const std::size_t index) const noexcept {
+    return index < note_tracks_.size() ? std::optional{note_tracks_[index]} : std::nullopt;
+}
+
+NoteEditResult NoteEditor::deleteTrack(const std::size_t track) {
+    if (track >= state_.track_count) { return NoteEditResult::invalid_index; }
+    auto next = state_;
+    next.notes.clear();
+    std::vector<std::size_t> remapped(state_.notes.size());
+    for (std::size_t i = 0; i < state_.notes.size(); ++i) {
+        remapped[i] = next.notes.size();
+        if (note_tracks_[i] != track) { next.notes.push_back(state_.notes[i]); }
+    }
+    std::erase_if(next.regions, [track](const auto& region) { return region.track == track; });
+    for (auto& region : next.regions) {
+        if (region.track > track) { --region.track; }
+        for (auto& index : region.note_indices) { index = remapped[index]; }
+    }
+    next.tracks.erase(next.tracks.begin() + static_cast<std::ptrdiff_t>(track));
+    // Keep one empty destination so users can immediately record or paint again.
+    if (next.tracks.empty()) { next.tracks.push_back({}); }
+    next.track_count = next.tracks.size();
+    next.selected_index.reset();
+    next.selected_indices.clear();
+    return commit(std::move(next), "Delete track");
+}
+
 NoteEditResult NoteEditor::addTrack(const TrackDefinition track) {
     if (state_.track_count >= 16 || !validTrackDefinition(track)) { return NoteEditResult::invalid_index; }
     auto next = state_;
@@ -280,6 +323,24 @@ const std::vector<TimedMidiNote>& NoteEditor::projectedNotes() const noexcept {
     return projected_notes_;
 }
 
+std::optional<MidiSequence> NoteEditor::exportSequence(const double tempo_bpm,
+    const std::uint16_t ticks_per_quarter) const {
+    auto notes = projected_notes_;
+    // Use melodic GM channels first; a sixteenth lane uses the remaining channel 10.
+    const auto channelFor = [](std::size_t track) {
+        return static_cast<std::uint8_t>(track == 15 ? 9 : track >= 9 ? track + 1 : track);
+    };
+    for (std::size_t i = 0; i < notes.size(); ++i) { notes[i].channel = channelFor(note_tracks_[i]); }
+    auto sequence = MidiTimeline::fromTimedNotes(notes, tempo_bpm, ticks_per_quarter);
+    if (!sequence) { return std::nullopt; }
+    for (std::size_t track = 0; track < state_.tracks.size(); ++track) {
+        if (!state_.tracks[track].muted) {
+            sequence->program_changes.push_back({channelFor(track), instrumentVoiceMidiProgram(state_.tracks[track].instrument)});
+        }
+    }
+    return sequence;
+}
+
 std::optional<std::size_t> NoteEditor::selectedIndex() const noexcept {
     return state_.selected_index;
 }
@@ -361,7 +422,8 @@ NoteEditResult NoteEditor::splitSelected(const double seconds) {
     return split ? commit(std::move(next), "Slice notes") : NoteEditResult::no_change;
 }
 
-NoteEditResult NoteEditor::add(TimedMidiNote note) {
+NoteEditResult NoteEditor::add(TimedMidiNote note, const std::optional<std::size_t> track) {
+    if (track && *track >= state_.track_count) { return NoteEditResult::invalid_index; }
     if (!note.isValid()) {
         return NoteEditResult::invalid_note;
     }
@@ -373,6 +435,14 @@ NoteEditResult NoteEditor::add(TimedMidiNote note) {
             return std::find(r.note_indices.begin(), r.note_indices.end(), *state_.selected_index)
                 != r.note_indices.end();
         });
+    }
+    if (track && (region == next.regions.end() || region->track != *track)) {
+        region = std::find_if(next.regions.begin(), next.regions.end(),
+            [track](const auto& r) { return r.track == *track; });
+        if (region == next.regions.end()) {
+            next.regions.push_back({{}, *track, trackKindName(next.tracks[*track].kind)});
+            region = std::prev(next.regions.end());
+        }
     }
     if (region == next.regions.end()) {
         if (next.regions.empty()) { next.regions.push_back({{}, 0, "Melody 01"}); }
@@ -604,6 +674,13 @@ void NoteEditor::refreshProjection() {
         projected_notes_ = scale_processor_.process(state_.notes, scale_);
     } else {
         projected_notes_ = state_.notes;
+    }
+    note_tracks_.assign(state_.notes.size(), 0);
+    for (const auto& region : state_.regions) {
+        for (const auto index : region.note_indices) {
+            note_tracks_[index] = region.track;
+            projected_notes_[index].muted = state_.notes[index].muted || state_.tracks[region.track].muted;
+        }
     }
 }
 

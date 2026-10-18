@@ -39,6 +39,8 @@ int main(int argc, char** argv) {
     expect(near(sought, 2.0) && playlist.playheadViewportX() && near(*playlist.playheadViewportX(), 390),
         "ruler click seeks at the displayed time without editing notes");
     expect(!editor.canUndo(), "ruler seeking creates no note edit");
+    QTest::mouseClick(playlist.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(440, 80));
+    expect(near(sought,2.5) && !editor.canUndo(), "empty Playlist grid click seeks without creating an edit");
     expect(playlist.regionViewportRect().isEmpty(), "empty playlist invents no region");
     expect(!playlist.viewport()->grab().isNull(), "empty playlist paints offscreen");
 

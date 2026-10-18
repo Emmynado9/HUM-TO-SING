@@ -6,6 +6,8 @@
 #include "PianoRollWidget.hpp"
 #include "PlaylistWidget.hpp"
 #include <QTabWidget>
+#include <QCheckBox>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QToolButton>
@@ -149,8 +151,7 @@ int main(int argc, char* argv[]) {
             if (!complete_shell) { application.exit(2); return; }
             for (const auto& pair : {
                      std::pair{"openRecorderButton", "recordingDialog"},
-                     std::pair{"openPianoRollButton", "pianoRollDialog"},
-                     std::pair{"openPitchLabButton", "pitchLabDialog"}}) {
+                     std::pair{"openPianoRollButton", "pianoRollDialog"}}) {
                 auto* button = window.findChild<QPushButton*>(QString::fromLatin1(pair.first));
                 auto* dialog = window.findChild<QDialog*>(QString::fromLatin1(pair.second));
                 if (!button || !dialog || dialog->isVisible()) { application.exit(3); return; }
@@ -268,6 +269,41 @@ int main(int argc, char* argv[]) {
                 || roll->loopRange() != playlist->loopRange()) { application.exit(35); return; }
             playlist_loop->click();
             if (piano_loop->isChecked() || roll->loopRange()) { application.exit(36); return; }
+            if (window.findChild<QPushButton*>("openPitchLabButton") || window.findChild<QDialog*>("pitchLabDialog")) {
+                application.exit(37); return;
+            }
+            auto* track_type=window.findChild<QComboBox*>("playlistTrackTypeCombo");
+            auto* track_voice=window.findChild<QComboBox*>("playlistTrackInstrumentCombo");
+            auto* track_mute=window.findChild<QPushButton*>("muteTrackButton");
+            auto* track_delete=window.findChild<QPushButton*>("deleteTrackButton");
+            auto* references=window.findChild<QCheckBox*>("showOtherTracksCheck");
+            if (!track_type || !track_voice || !track_mute || !track_delete || !references
+                || roll->activeTrack()!=playlist->selectedTrack()) { application.exit(38); return; }
+            references->click();
+            if (!roll->showOtherTracks()) { application.exit(39); return; }
+            track_type->setCurrentIndex(track_type->findData(static_cast<int>(hum::core::TrackKind::melody)));
+            if (tabs->currentIndex()!=0) { application.exit(40); return; }
+            track_mute->click();
+            undo->click();
+            if (track_mute->isChecked()) { application.exit(41); return; }
+            track_voice->setCurrentIndex(track_voice->findData(static_cast<int>(hum::core::InstrumentVoice::strings)));
+            if (instrument->currentData()!=track_voice->currentData()) { application.exit(42); return; }
+            const QPointF point(200,8);
+            QMouseEvent seek_press(QEvent::MouseButtonPress,point,point,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+            QMouseEvent seek_release(QEvent::MouseButtonRelease,point,point,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+            QApplication::sendEvent(roll->viewport(),&seek_press);QApplication::sendEvent(roll->viewport(),&seek_release);
+            auto* position=window.findChild<QLabel*>("transportPosition");
+            const auto held_position=position->text();
+            auto* add_note=window.findChild<QPushButton*>("addNoteButton");
+            if (!add_note || held_position==QStringLiteral("0.00 s")) { application.exit(43); return; }
+            add_note->click();
+            if (position->text()!=held_position) { application.exit(44); return; }
+            undo->click();
+            track_delete->click();
+            undo->click();
+            if (roll->activeTrack()!=playlist->selectedTrack() || !roll->noteViewportRect(11).isValid()) {
+                application.exit(45); return;
+            }
             application.exit(0);
         });
     }

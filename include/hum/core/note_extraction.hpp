@@ -24,6 +24,8 @@ struct NoteExtractionConfig {
     std::uint8_t midi_channel{0};
     double transition_confirmation_seconds{0.090};
     double octave_confirmation_seconds{0.180};
+    double maximum_voiced_gap_seconds{0.200};
+    double maximum_octave_glitch_seconds{0.280};
 
     [[nodiscard]] bool isValid() const noexcept;
 };

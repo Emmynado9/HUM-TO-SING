@@ -117,7 +117,7 @@ std::optional<std::string> ProjectFileCodec::encode(const ProjectDocument& proje
         ? std::vector<TrackDefinition>(project.track_count) : project.tracks;
     output << "track_count " << project.track_count << '\n';
     for (const auto& track : tracks) {
-        output << "track " << trackKindToken(track.kind) << ' ' << instrumentToken(track.instrument) << '\n';
+        output << "track " << trackKindToken(track.kind) << ' ' << instrumentToken(track.instrument) << ' ' << (track.muted ? 1 : 0) << '\n';
     }
     output << "region_count " << project.playlist_regions.size() << '\n';
     for (const auto& region : project.playlist_regions) {
@@ -236,7 +236,11 @@ ProjectDecodeResult ProjectFileCodec::decode(const std::string_view bytes) {
                     if (!parsed_kind || !parsed_instrument) {
                         return corrupt("A track kind or instrument is invalid.");
                     }
-                    project.tracks.push_back({*parsed_kind, *parsed_instrument});
+                    unsigned muted = 0;
+                    if (version >= 5 && (!(input >> muted) || muted > 1)) {
+                        return corrupt("A track mute flag is invalid.");
+                    }
+                    project.tracks.push_back({*parsed_kind, *parsed_instrument, muted == 1});
                 }
             } else {
                 project.tracks.assign(project.track_count, {});

@@ -496,8 +496,49 @@ void testPianoKeyAudition() {
     expect(heard.back() == 60, "piano audition follows pitch zoom and scroll");
 }
 
+
+void testTrackIsolationAndSeeking() {
+    using namespace hum::core;
+    NoteEditor editor;
+    expect(editor.replaceAll({{60,96,.5,.5,0},{64,96,1.5,.5,0},{67,96,2.5,.5,0}},
+        {{{0},0,"A"},{{1},1,"B"},{{2},2,"C"}},3), "isolated editor fixture loads");
+    hum::app::PianoRollWidget roll(editor);
+    roll.resize(950,500);roll.show();roll.setActiveTrack(1);roll.refresh(true);settle();
+    roll.setShowOtherTracks(true);
+    expect(roll.showOtherTracks(), "other-track reference notes can be shown");
+    QTest::keyClick(&roll, Qt::Key_A, Qt::ControlModifier);
+    expect(editor.selectedIndices()==std::vector<std::size_t>{1}, "select all includes only active-track notes");
+    roll.setTool(hum::app::PianoRollWidget::Tool::erase);
+    QTest::mouseClick(roll.viewport(),Qt::LeftButton,Qt::NoModifier,roll.noteViewportRect(0).center().toPoint());
+    expect(editor.notes().size()==3 && !editor.canUndo(), "grey reference cannot be erased");
+    QTest::mouseClick(roll.viewport(),Qt::LeftButton,Qt::NoModifier,roll.noteViewportRect(2).center().toPoint());
+    expect(editor.notes().size()==3, "other later track cannot be edited");
+    roll.setTool(hum::app::PianoRollWidget::Tool::select);
+    std::optional<double> seek;
+    roll.setSeekCallback([&](double seconds){seek=seconds;});
+    const auto rect=roll.noteViewportRect(1);
+    QTest::mouseClick(roll.viewport(),Qt::LeftButton,Qt::NoModifier,QPoint(rect.left(),8));
+    expect(seek && std::abs(*seek-1.5)<.01 && !editor.canUndo(), "piano ruler seeks without editing");
+    QTest::mouseClick(roll.viewport(),Qt::LeftButton,Qt::NoModifier,rect.center().toPoint());
+    expect(seek && std::abs(*seek-1.75)<.01 && !editor.canUndo(), "note click seeks without changing timing");
+    roll.setActiveTrack(0);
+    expect(editor.selectedIndices().empty(), "switching tracks drops foreign selection");
+    QTest::keyClick(&roll, Qt::Key_A, Qt::ControlModifier);
+    roll.deleteSelected();
+    expect(editor.notes().size()==2 && editor.notes()[0].pitch==64, "delete affects active track only");
+    roll.setActiveTrack(1);roll.undo();
+    expect(editor.notes().size()==3 && editor.selectedIndices().empty(), "undo cannot restore editable selection on a foreign track");
+    expect(editor.deleteTrack(2)==NoteEditResult::applied, "prepare empty target track");
+    expect(editor.addTrack()==NoteEditResult::applied, "new empty lane exists");
+    roll.setActiveTrack(2);roll.addNoteAtViewportCenter();
+    expect(editor.trackForNote(editor.notes().size()-1)==2, "new piano notes belong to the selected empty track");
+    roll.setShowOtherTracks(false);
+    expect(!roll.showOtherTracks() && !roll.viewport()->grab().isNull(), "references can be hidden without editing notes");
+}
+
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    testTrackIsolationAndSeeking();
     testPianoKeyAudition();
     testSelectionDoesNotEditTiming();
     testFocusSelectedNote();

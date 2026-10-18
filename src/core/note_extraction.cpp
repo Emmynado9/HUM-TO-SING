@@ -72,6 +72,76 @@ struct ActiveNote {
     };
 }
 
+// Offline context repair. Raw detector evidence is retained unchanged by the caller.
+// Only bridge audible, uncertain frames bracketed by the same pitch; silence stays a rest.
+[[nodiscard]] std::vector<std::optional<PitchObservation>> sustainedObservations(
+    const std::span<const RawPitchEstimate> frames, const std::uint32_t rate,
+    const std::size_t frame_size, const double hop_seconds, const double reference,
+    const NoteExtractionConfig& config) {
+    std::vector<std::optional<PitchObservation>> observations;
+    observations.reserve(frames.size());
+    for (const auto& frame : frames) { observations.push_back(observationFor(frame, rate, frame_size, reference)); }
+    const auto time = [rate, frame_size, frames](std::size_t i) {
+        return (static_cast<double>(frames[i].frame_start_sample) + static_cast<double>(frame_size) / 2.0) / rate;
+    };
+    const auto interpolate = [&](std::size_t begin, std::size_t end) {
+        const auto left = *observations[begin - 1], right = *observations[end];
+        for (auto i = begin; i < end; ++i) {
+            const auto center = time(i);
+            const auto pitch = left.midi_pitch + (right.midi_pitch - left.midi_pitch)
+                * (center - left.center_seconds) / (right.center_seconds - left.center_seconds);
+            observations[i] = PitchObservation{static_cast<int>(std::lround(pitch)), pitch, center};
+        }
+    };
+    for (std::size_t i = 1; i + 1 < frames.size();) {
+        if (observations[i]) { ++i; continue; }
+        const auto begin = i;
+        while (i < frames.size() && !observations[i]) { ++i; }
+        if (i == frames.size() || !observations[begin - 1]) { continue; }
+        const auto duration = time(i) - time(begin);
+        if (duration > config.maximum_voiced_gap_seconds + 1e-9
+            || std::abs(observations[begin - 1]->midi_pitch - observations[i]->midi_pitch) > .65) { continue; }
+        const auto floor = std::min(frames[begin - 1].rms_level, frames[i].rms_level) * .15;
+        bool voiced = true;
+        for (auto j = begin; j < i; ++j) {
+            voiced = voiced && frames[j].status == PitchEstimateStatus::no_periodic_candidate
+                && std::isfinite(frames[j].rms_level) && frames[j].rms_level > std::max(.0001, floor)
+                && frames[j].voicing_quality >= .35;
+        }
+        if (voiced) { interpolate(begin, i); }
+    }
+    // A brief octave excursion surrounded by a stable held pitch is commonly a
+    // harmonic ambiguity. Require support on both sides; held octave changes survive.
+    for (std::size_t i = 1; i + 1 < observations.size(); ++i) {
+        if (!observations[i - 1] || !observations[i]) { continue; }
+        const auto anchor = observations[i - 1]->midi_pitch;
+        const auto octaveError = [anchor](double pitch) {
+            const auto distance = std::abs(pitch - anchor);
+            return distance > 11.3 && distance < 24.7
+                && std::abs(distance - 12.0 * std::round(distance / 12.0)) < .7;
+        };
+        if (!octaveError(observations[i]->midi_pitch)) { continue; }
+        auto end = i;
+        while (end < observations.size() && observations[end]
+            && octaveError(observations[end]->midi_pitch)
+            && time(end) - time(i) <= config.maximum_octave_glitch_seconds) { ++end; }
+        if (end == observations.size() || !observations[end]
+            || time(end) - time(i) > config.maximum_octave_glitch_seconds + 1e-9
+            || std::abs(observations[end]->midi_pitch - anchor) > .65) { continue; }
+        auto before = i - 1, after = end;
+        while (before > 0 && time(i - 1) - time(before) < .08 && observations[before - 1]
+            && std::abs(observations[before - 1]->midi_pitch - anchor) < .75) { --before; }
+        while (after + 1 < observations.size() && time(after) - time(end) < .08 && observations[after + 1]
+            && std::abs(observations[after + 1]->midi_pitch - anchor) < .75) { ++after; }
+        if (time(i - 1) - time(before) + hop_seconds >= .08 - 1e-9
+            && time(after) - time(end) + hop_seconds >= .08 - 1e-9) {
+            interpolate(i, end);
+            i = end;
+        }
+    }
+    return observations;
+}
+
 } // namespace
 
 bool NoteExtractionConfig::isValid() const noexcept {
@@ -88,6 +158,10 @@ bool NoteExtractionConfig::isValid() const noexcept {
         && transition_confirmation_seconds >= 0.0 && transition_confirmation_seconds <= 1.0
         && std::isfinite(octave_confirmation_seconds)
         && octave_confirmation_seconds >= transition_confirmation_seconds && octave_confirmation_seconds <= 1.0
+        && std::isfinite(maximum_voiced_gap_seconds)
+        && maximum_voiced_gap_seconds >= 0.0 && maximum_voiced_gap_seconds <= 1.0
+        && std::isfinite(maximum_octave_glitch_seconds)
+        && maximum_octave_glitch_seconds >= 0.0 && maximum_octave_glitch_seconds <= 1.0
         && fixed_velocity >= 1 && fixed_velocity <= 127
         && midi_channel <= 15;
 }
@@ -106,6 +180,10 @@ std::vector<TimedMidiNote> HysteresisNoteSegmenter::segment(
         || !std::isfinite(reference_a4_hz) || reference_a4_hz <= 0.0
         || !config.isValid()) {
         return notes;
+    }
+
+    for (std::size_t i = 1; i < frames.size(); ++i) {
+        if (frames[i].frame_start_sample <= frames[i - 1].frame_start_sample) { return notes; }
     }
 
     const auto half_hop = static_cast<double>(hop_size)
@@ -134,12 +212,14 @@ std::vector<TimedMidiNote> HysteresisNoteSegmenter::segment(
         active.reset();
     };
 
-    for (const auto& frame : frames) {
+    const auto observations = sustainedObservations(frames, sample_rate_hz, frame_size,
+        hop_seconds, reference_a4_hz, config);
+    for (std::size_t frame_index = 0; frame_index < frames.size(); ++frame_index) {
+        const auto& frame = frames[frame_index];
         const auto center = (static_cast<double>(frame.frame_start_sample)
             + static_cast<double>(frame_size) / 2.0)
             / static_cast<double>(sample_rate_hz);
-        const auto observation = observationFor(
-            frame, sample_rate_hz, frame_size, reference_a4_hz);
+        const auto& observation = observations[frame_index];
 
         if (!observation) {
             onset.clear();
@@ -244,7 +324,7 @@ PhraseConversionResult PhraseConversionPipeline::convert(
         if (!recording.isValid()
             || !pitch_config.isValid(recording.format().sample_rate_hz)
             || !extraction_config.isValid()
-            || !MidiSequence{ticks_per_quarter, tempo_bpm, {}}.isValid()) {
+            || !MidiSequence{ticks_per_quarter, tempo_bpm, {}, {}}.isValid()) {
             result.status = PhraseConversionStatus::invalid_input;
             result.message = "The recording or conversion settings are invalid.";
             return result;

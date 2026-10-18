@@ -122,8 +122,6 @@ if(HUM_BUILD_GUI)
         src/app/main.cpp
         src/app/MainWindow.cpp
         src/app/MainWindow.hpp
-        src/app/PitchLabProcessor.cpp
-        src/app/PitchLabProcessor.hpp
         src/app/PhraseConversionProcessor.cpp
         src/app/PhraseConversionProcessor.hpp
         src/app/ProjectFileStore.cpp

@@ -31,6 +31,7 @@ enum class InstrumentVoice : std::uint8_t {
 struct TrackDefinition {
     TrackKind kind{TrackKind::melody};
     InstrumentVoice instrument{InstrumentVoice::grand_piano};
+    bool muted{false};
     bool operator==(const TrackDefinition&) const = default;
 };
 
@@ -59,8 +60,8 @@ struct PianoRollTransform {
     [[nodiscard]] double contentHeight() const noexcept;
 };
 
-// Groups refer to the one canonical note vector; lanes are arrangement labels,
-// not independent copies of MIDI events or instrument routing.
+// Groups reference the one canonical note vector; track settings and export
+// routing never create a second editable note model.
 struct PlaylistRegion {
     std::vector<std::size_t> note_indices;
     std::size_t track{0};
@@ -80,6 +81,10 @@ public:
     [[nodiscard]] std::size_t trackCount() const noexcept;
     [[nodiscard]] const std::vector<TrackDefinition>& tracks() const noexcept;
     [[nodiscard]] NoteEditResult addTrack(TrackDefinition track = {});
+    [[nodiscard]] NoteEditResult deleteTrack(std::size_t track);
+    [[nodiscard]] NoteEditResult setTrackKind(std::size_t track, TrackKind kind);
+    [[nodiscard]] NoteEditResult setTrackMuted(std::size_t track, bool muted);
+    [[nodiscard]] std::optional<std::size_t> trackForNote(std::size_t index) const noexcept;
     [[nodiscard]] NoteEditResult setTrackInstrument(std::size_t track, InstrumentVoice instrument);
     [[nodiscard]] NoteEditResult appendRegion(std::vector<TimedMidiNote> notes,
         double offset_seconds, std::size_t track);
@@ -90,6 +95,7 @@ public:
 
     [[nodiscard]] const std::vector<TimedMidiNote>& notes() const noexcept;
     [[nodiscard]] const std::vector<TimedMidiNote>& projectedNotes() const noexcept;
+    [[nodiscard]] std::optional<MidiSequence> exportSequence(double tempo_bpm, std::uint16_t ticks_per_quarter) const;
     [[nodiscard]] std::optional<std::size_t> selectedIndex() const noexcept;
     [[nodiscard]] const TimedMidiNote* selectedNote() const noexcept;
     [[nodiscard]] bool select(std::optional<std::size_t> index) noexcept;
@@ -100,7 +106,7 @@ public:
     [[nodiscard]] NoteEditResult toggleMuteSelected();
     [[nodiscard]] NoteEditResult splitSelected(double seconds);
 
-    [[nodiscard]] NoteEditResult add(TimedMidiNote note);
+    [[nodiscard]] NoteEditResult add(TimedMidiNote note, std::optional<std::size_t> track = std::nullopt);
     [[nodiscard]] NoteEditResult updateSelected(
         TimedMidiNote note,
         std::string label = "Edit note");
@@ -152,6 +158,7 @@ private:
     ScaleDefinition scale_{};
     NearestScaleProcessor scale_processor_;
     std::vector<TimedMidiNote> projected_notes_;
+    std::vector<std::size_t> note_tracks_;
     bool magnet_enabled_{false};
 };
 

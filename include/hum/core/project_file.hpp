@@ -12,7 +12,7 @@
 
 namespace hum::core {
 
-inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 4;
+inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 5;
 
 struct ProjectDocument {
     std::uint32_t schema_version{kCurrentProjectSchemaVersion};

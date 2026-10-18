@@ -9,7 +9,6 @@
 #include "PianoRollWidget.hpp"
 #include "PlaylistWidget.hpp"
 #include "PhraseConversionProcessor.hpp"
-#include "PitchLabProcessor.hpp"
 #include "ProjectFileStore.hpp"
 #include "QtAudioCapture.hpp"
 #include "QtAudioPlayback.hpp"
@@ -120,10 +119,8 @@ public:
           midi_playback_(window),
           cue_playback_(window),
           audition_playback_(window),
-          pitch_processor_(window),
-          phrase_processor_(window),
-          pitch_smoother_(5) {
-        note_editor_.setMagnetEnabled(true);
+          phrase_processor_(window) {
+        note_editor_.setMagnetEnabled(false);
         buildUi();
         wireEvents();
         for (QWidget* host : {static_cast<QWidget*>(window_), static_cast<QWidget*>(piano_dialog_)}) {
@@ -161,7 +158,6 @@ public:
         if (playlist_) {
             playlist_->setPlayheadSeconds(std::nullopt);
         }
-        pitch_processor_.cancel();
         phrase_processor_.cancel();
         recorder_.shutdown();
     }
@@ -324,94 +320,6 @@ private:
         recorder_layout->addWidget(limit);
         recording_layout->addWidget(recorder_card);
 
-        pitch_dialog_ = new QDialog(window_);
-        pitch_dialog_->setObjectName(QStringLiteral("pitchLabDialog"));
-        pitch_dialog_->setWindowTitle(QStringLiteral("Pitch Lab — Local YIN diagnostics"));
-        pitch_dialog_->resize(660, 790);
-        auto* pitch_card = new QFrame(pitch_dialog_);
-        pitch_card->setObjectName(QStringLiteral("card"));
-        auto* pitch_layout = new QVBoxLayout(pitch_card);
-        pitch_layout->setContentsMargins(22, 20, 22, 20);
-        pitch_layout->setSpacing(11);
-        auto* pitch_title = new QLabel(QStringLiteral("Pitch Lab"), pitch_card);
-        pitch_title->setObjectName(QStringLiteral("cardTitle"));
-        auto* pitch_copy = new QLabel(
-            QStringLiteral("Single-note YIN diagnostic · A4 = 440 Hz"), pitch_card);
-        pitch_copy->setObjectName(QStringLiteral("footnote"));
-        pitch_layout->addWidget(pitch_title);
-        pitch_layout->addWidget(pitch_copy);
-
-        pitch_state_label_ = new QLabel(QStringLiteral("NO RELIABLE PITCH"), pitch_card);
-        pitch_state_label_->setObjectName(QStringLiteral("pitchState"));
-        pitch_state_label_->setAlignment(Qt::AlignCenter);
-        pitch_note_label_ = new QLabel(QStringLiteral("—"), pitch_card);
-        pitch_note_label_->setObjectName(QStringLiteral("pitchNote"));
-        pitch_note_label_->setAlignment(Qt::AlignCenter);
-        pitch_layout->addWidget(pitch_state_label_);
-        pitch_layout->addWidget(pitch_note_label_);
-
-        auto* pitch_metrics = new QHBoxLayout();
-        pitch_frequency_value_ = addMetric(pitch_metrics, QStringLiteral("FREQUENCY"));
-        pitch_cents_value_ = addMetric(pitch_metrics, QStringLiteral("CENTS FROM NOTE"));
-        pitch_quality_value_ = addMetric(
-            pitch_metrics, QStringLiteral("VOICING QUALITY"));
-        pitch_layout->addLayout(pitch_metrics);
-
-        auto* settings_label = new QLabel(QStringLiteral("ANALYSIS SETTINGS"), pitch_card);
-        settings_label->setObjectName(QStringLiteral("sectionLabel"));
-        pitch_layout->addWidget(settings_label);
-        auto* settings = new QGridLayout();
-        settings->setHorizontalSpacing(8);
-        settings->setVerticalSpacing(7);
-        frame_size_combo_ = new QComboBox(pitch_card);
-        for (const auto size : {2'048, 4'096, 8'192}) {
-            frame_size_combo_->addItem(QString::number(size), size);
-        }
-        frame_size_combo_->setCurrentIndex(1);
-        hop_size_combo_ = new QComboBox(pitch_card);
-        for (const auto size : {128, 256, 512, 1'024}) {
-            hop_size_combo_->addItem(QString::number(size), size);
-        }
-        hop_size_combo_->setCurrentIndex(2);
-        gate_spin_ = new QDoubleSpinBox(pitch_card);
-        gate_spin_->setRange(0.0, 0.20);
-        gate_spin_->setDecimals(3);
-        gate_spin_->setSingleStep(0.005);
-        gate_spin_->setValue(0.010);
-        gate_spin_->setSuffix(QStringLiteral(" RMS"));
-        minimum_pitch_spin_ = new QSpinBox(pitch_card);
-        minimum_pitch_spin_->setRange(50, 500);
-        minimum_pitch_spin_->setValue(80);
-        minimum_pitch_spin_->setSuffix(QStringLiteral(" Hz"));
-        maximum_pitch_spin_ = new QSpinBox(pitch_card);
-        maximum_pitch_spin_->setRange(200, 2'000);
-        maximum_pitch_spin_->setValue(1'000);
-        maximum_pitch_spin_->setSuffix(QStringLiteral(" Hz"));
-        addSetting(settings, 0, QStringLiteral("Frame"), frame_size_combo_);
-        addSetting(settings, 1, QStringLiteral("Hop"), hop_size_combo_);
-        addSetting(settings, 2, QStringLiteral("Input gate"), gate_spin_);
-        addSetting(settings, 3, QStringLiteral("Minimum"), minimum_pitch_spin_);
-        addSetting(settings, 4, QStringLiteral("Maximum"), maximum_pitch_spin_);
-        pitch_layout->addLayout(settings);
-
-        pitch_detail_label_ = new QLabel(
-            QStringLiteral("Start recording and sustain one note."), pitch_card);
-        pitch_detail_label_->setObjectName(QStringLiteral("pitchDetail"));
-        pitch_detail_label_->setWordWrap(true);
-        latency_label_ = new QLabel(
-            QStringLiteral("Window delay depends on the selected device sample rate; UI refresh ≤ 33 ms."),
-            pitch_card);
-        latency_label_->setObjectName(QStringLiteral("footnote"));
-        latency_label_->setWordWrap(true);
-        replay_analysis_button_ = new QPushButton(
-            QStringLiteral("Analyze saved take"), pitch_card);
-        replay_analysis_button_->setObjectName(QStringLiteral("secondaryButton"));
-        pitch_layout->addWidget(pitch_detail_label_);
-        pitch_layout->addWidget(latency_label_);
-        pitch_layout->addWidget(replay_analysis_button_);
-        new QVBoxLayout(pitch_dialog_);
-        pitch_dialog_->layout()->addWidget(pitch_card);
-
         auto* phrase_card = new QFrame(recording_content);
         phrase_card->setObjectName(QStringLiteral("card"));
         auto* phrase_layout = new QVBoxLayout(phrase_card);
@@ -557,14 +465,14 @@ private:
         piano_layout->setSpacing(9);
         auto* piano_heading = new QHBoxLayout();
         auto* piano_title_box = new QVBoxLayout();
-        auto* piano_title = new QLabel(QStringLiteral("Piano roll — melody & chords"), piano_card);
-        piano_title->setObjectName(QStringLiteral("cardTitle"));
+        piano_title_ = new QLabel(QStringLiteral("Piano roll"), piano_card);
+        piano_title_->setObjectName(QStringLiteral("cardTitle"));
         editor_status_label_ = new QLabel(
             QStringLiteral("Record a melody, or double-click the grid to add your first note."),
             piano_card);
         editor_status_label_->setObjectName(QStringLiteral("footnote"));
         editor_status_label_->setWordWrap(true);
-        piano_title_box->addWidget(piano_title);
+        piano_title_box->addWidget(piano_title_);
         piano_title_box->addWidget(editor_status_label_);
         piano_heading->addLayout(piano_title_box, 1);
 
@@ -579,6 +487,7 @@ private:
             button->setObjectName(QStringLiteral("secondaryButton"));
             piano_heading->addWidget(button);
         }
+        add_note_button_->setObjectName(QStringLiteral("addNoteButton"));
         piano_play_button_ = new QPushButton(QStringLiteral("Play"), piano_card);
         piano_play_button_->setObjectName(QStringLiteral("pianoPlayButton"));
         piano_pause_button_ = new QPushButton(QStringLiteral("Pause"), piano_card);
@@ -599,6 +508,10 @@ private:
         track_instrument_combo_->setToolTip(QStringLiteral("Instrument for the selected Playlist track and clicked piano keys."));
         piano_transport->addWidget(new QLabel(QStringLiteral("Track instrument"), piano_card));
         piano_transport->addWidget(track_instrument_combo_);
+        show_other_tracks_ = new QCheckBox(QStringLiteral("Show other tracks"), piano_card);
+        show_other_tracks_->setObjectName(QStringLiteral("showOtherTracksCheck"));
+        show_other_tracks_->setToolTip(QStringLiteral("Show other tracks as grey, read-only reference notes."));
+        piano_transport->addWidget(show_other_tracks_);
         piano_layout->addLayout(piano_heading);
         piano_layout->addLayout(piano_transport);
 
@@ -716,7 +629,6 @@ private:
         };
         open_recorder_button_ = featureButton(QStringLiteral("Hum → MIDI"), QStringLiteral("openRecorderButton"), recording_dialog_);
         featureButton(QStringLiteral("Piano roll"), QStringLiteral("openPianoRollButton"), piano_dialog_);
-        featureButton(QStringLiteral("Pitch Lab"), QStringLiteral("openPitchLabButton"), pitch_dialog_);
         feature_toolbar->addStretch();
         midi_play_button_ = new QPushButton(QStringLiteral("Play"), root);
         midi_play_button_->setObjectName(QStringLiteral("midiPlayButton"));
@@ -725,7 +637,6 @@ private:
         feature_toolbar->addWidget(export_button_);
         open_recorder_button_->setIcon(toolIcon(ToolIcon::microphone, true));
         window_->findChild<QPushButton*>(QStringLiteral("openPianoRollButton"))->setIcon(toolIcon(ToolIcon::piano));
-        window_->findChild<QPushButton*>(QStringLiteral("openPitchLabButton"))->setIcon(toolIcon(ToolIcon::pitch));
         midi_play_button_->setIcon(toolIcon(ToolIcon::play, true));
         export_button_->setIcon(toolIcon(ToolIcon::exportMidi, true));
         page->addLayout(feature_toolbar);
@@ -743,7 +654,7 @@ private:
         transport->addWidget(tempo_spin_);
         transport->addWidget(transport_position_);
         transport->addStretch();
-        transport->addWidget(new QLabel(QStringLiteral("Click the Playlist ruler to seek"), root));
+        transport->addWidget(new QLabel(QStringLiteral("Click either timeline to play from that point"), root));
         midi_stop_button_->setIcon(toolIcon(ToolIcon::stop, true));
         metronome_button_->setIcon(toolIcon(ToolIcon::metronome));
         page->addLayout(transport);
@@ -787,6 +698,33 @@ private:
         playlist_undo_button_->setIcon(toolIcon(ToolIcon::undo));
         playlist_redo_button_->setIcon(toolIcon(ToolIcon::redo));
         playlist_layout->addLayout(playlist_heading);
+        auto* track_controls = new QHBoxLayout();
+        selected_track_label_ = new QLabel(playlist_card);
+        selected_track_label_->setObjectName(QStringLiteral("selectedTrackLabel"));
+        track_controls->addWidget(selected_track_label_);
+        playlist_kind_combo_ = new QComboBox(playlist_card);
+        playlist_kind_combo_->setObjectName(QStringLiteral("playlistTrackTypeCombo"));
+        playlist_kind_combo_->addItem(QStringLiteral("Melody"), static_cast<int>(core::TrackKind::melody));
+        playlist_kind_combo_->addItem(QStringLiteral("Chords"), static_cast<int>(core::TrackKind::chords));
+        playlist_kind_combo_->setToolTip(QStringLiteral("Type for new recordings on this track. Existing notes stay unchanged."));
+        track_controls->addWidget(playlist_kind_combo_);
+        playlist_instrument_combo_ = new QComboBox(playlist_card);
+        playlist_instrument_combo_->setObjectName(QStringLiteral("playlistTrackInstrumentCombo"));
+        for (int i = 0; i < track_instrument_combo_->count(); ++i) {
+            playlist_instrument_combo_->addItem(track_instrument_combo_->itemText(i), track_instrument_combo_->itemData(i));
+        }
+        track_controls->addWidget(playlist_instrument_combo_);
+        mute_track_button_ = new QPushButton(QStringLiteral("Mute track"), playlist_card);
+        mute_track_button_->setCheckable(true);
+        mute_track_button_->setObjectName(QStringLiteral("muteTrackButton"));
+        mute_track_button_->setToolTip(QStringLiteral("Mute this track in playback and MIDI export. Individual note mutes are preserved."));
+        track_controls->addWidget(mute_track_button_);
+        delete_track_button_ = new QPushButton(QStringLiteral("Delete track"), playlist_card);
+        delete_track_button_->setObjectName(QStringLiteral("deleteTrackButton"));
+        delete_track_button_->setToolTip(QStringLiteral("Delete this track and its regions. Undo restores everything."));
+        track_controls->addWidget(delete_track_button_);
+        track_controls->addStretch();
+        playlist_layout->addLayout(track_controls);
         playlist_status_label_ = new QLabel(playlist_card);
         playlist_status_label_->setObjectName(QStringLiteral("footnote"));
         playlist_status_label_->setWordWrap(true);
@@ -816,10 +754,6 @@ private:
             #sectionLabel { color: #777; font-size: 11px; font-weight: 800; letter-spacing: 1px; }
             #fieldTitle { color: #222; font-size: 13px; font-weight: 700; }
             #cardTitle { color: #080808; font-size: 20px; font-weight: 800; }
-            #pitchState { color: #777; font-size: 10px; font-weight: 900; letter-spacing: 1px; padding-top: 5px; }
-            #pitchState[reliable="true"] { color: #18723a; }
-            #pitchNote { color: #080808; font-size: 54px; font-weight: 900; }
-            #pitchDetail { background: #f3f3f4; border-radius: 9px; padding: 9px; color: #555; font-size: 11px; }
             #statusPanel { background: #f3f3f4; border-radius: 10px; padding: 13px; color: #333; }
             #statusPanel[error="true"] { background: #fff0f0; color: #9c2020; }
             #duration { color: #080808; font-size: 37px; font-weight: 800; padding: 12px; }
@@ -830,7 +764,8 @@ private:
             #recordMetronomeButton:checked, #metronomeButton:checked { background: #263c30; color: white; border-color: #263c30; }
             #primaryButton { background: #080808; color: white; border: 1px solid #080808; }
             #stopButton { background: #e34848; color: white; border: 1px solid #e34848; }
-            #secondaryButton { background: white; color: #080808; border: 1px solid #cfcfcf; }
+            #secondaryButton, #addNoteButton, #muteTrackButton, #deleteTrackButton { background: white; color: #080808; border: 1px solid #cfcfcf; }
+            #muteTrackButton:checked { background: #263c30; color: white; border-color: #263c30; }
             #openProjectButton, #saveProjectButton { background: white; color: #080808; border: 1px solid #cfcfcf; }
             #midiPlayButton { background: #080808; color: white; border: 1px solid #080808; }
             #magnetButton { background: white; color: #080808; border: 1px solid #8f9690; }
@@ -851,7 +786,7 @@ private:
             QProgressBar { background: #ededed; border: 0; border-radius: 5px; height: 10px; text-align: center; color: #555; }
             QProgressBar::chunk { background: #080808; border-radius: 5px; }
             QAbstractScrollArea { background: white; border: 1px solid #dedee1; border-radius: 9px; }
-            #openRecorderButton, #openPianoRollButton, #openPitchLabButton,
+            #openRecorderButton, #openPianoRollButton,
             #addTrackButton, #duplicateRegionButton, #deleteRegionButton,
             #playlistUndoButton, #playlistRedoButton {
                 background: white; color: #080808; border: 1px solid #cfcfcf;
@@ -887,219 +822,17 @@ private:
         return value;
     }
 
-    void addSetting(
-        QGridLayout* layout,
-        const int row,
-        const QString& name,
-        QWidget* editor) {
-        auto* label = new QLabel(name, window_);
-        label->setObjectName(QStringLiteral("fieldTitle"));
-        layout->addWidget(label, row, 0);
-        layout->addWidget(editor, row, 1);
-    }
-
     [[nodiscard]] core::PitchDetectorConfig pitchConfig() const {
         core::PitchDetectorConfig config;
-        if (frame_size_combo_) {
-            config.frame_size = static_cast<std::size_t>(
-                frame_size_combo_->currentData().toULongLong());
-            config.hop_size = static_cast<std::size_t>(
-                hop_size_combo_->currentData().toULongLong());
-            config.input_gate_rms = static_cast<float>(gate_spin_->value());
-            config.minimum_frequency_hz = minimum_pitch_spin_->value();
-            config.maximum_frequency_hz = maximum_pitch_spin_->value();
+        config.minimum_frequency_hz = 55.0;
+        config.input_gate_rms = 0.004F;
+        // Keep a comparable window/hop duration on higher-rate microphones.
+        const auto rate = recorder_.currentFormat().value_or(core::AudioFormat{48'000, 1}).sample_rate_hz;
+        while (!config.isValid(rate) && config.frame_size < 32'768) {
+            config.frame_size *= 2;
+            config.hop_size *= 2;
         }
         return config;
-    }
-
-    void updatePitchLatency(
-        const std::uint32_t sample_rate_hz = 0,
-        const double worker_milliseconds = -1.0) {
-        if (sample_rate_hz == 0) {
-            latency_label_->setText(QStringLiteral(
-                "Window delay depends on the selected device sample rate; UI refresh ≤ 33 ms."));
-            return;
-        }
-        const auto config = pitchConfig();
-        const auto window_ms = 1'000.0 * static_cast<double>(config.frame_size) / sample_rate_hz;
-        const auto hop_ms = 1'000.0 * static_cast<double>(config.hop_size) / sample_rate_hz;
-        auto text = QStringLiteral(
-            "Detector window %1 ms · hop %2 ms · UI refresh ≤ 33 ms")
-            .arg(window_ms, 0, 'f', 1)
-            .arg(hop_ms, 0, 'f', 1);
-        if (worker_milliseconds >= 0.0) {
-            text += QStringLiteral(" · last worker %1 ms").arg(worker_milliseconds, 0, 'f', 2);
-        }
-        latency_label_->setText(text);
-    }
-
-    void setPitchReliableProperty(const bool reliable) {
-        pitch_state_label_->setProperty("reliable", reliable);
-        pitch_state_label_->style()->unpolish(pitch_state_label_);
-        pitch_state_label_->style()->polish(pitch_state_label_);
-    }
-
-    void showNoReliablePitch(const QString& detail) {
-        setPitchReliableProperty(false);
-        pitch_state_label_->setText(QStringLiteral("NO RELIABLE PITCH"));
-        pitch_note_label_->setText(QStringLiteral("—"));
-        pitch_frequency_value_->setText(QStringLiteral("—"));
-        pitch_cents_value_->setText(QStringLiteral("—"));
-        pitch_quality_value_->setText(QStringLiteral("—"));
-        pitch_detail_label_->setText(detail);
-    }
-
-    void presentPitch(
-        const core::DisplayPitchEstimate& display,
-        const double worker_milliseconds,
-        const bool replayed = false) {
-        updatePitchLatency(
-            recorder_.currentFormat().value_or(core::AudioFormat{}).sample_rate_hz,
-            worker_milliseconds);
-        if (!display.reliable) {
-            showNoReliablePitch(QStringLiteral("%1 · RMS %2%3")
-                .arg(QString::fromLatin1(core::pitchStatusText(display.raw.status)))
-                .arg(display.raw.rms_level, 0, 'f', 3)
-                .arg(replayed ? QStringLiteral(" · replay") : QString{}));
-            pitch_quality_value_->setText(
-                QStringLiteral("%1%").arg(display.raw.voicing_quality * 100.0, 0, 'f', 0));
-            return;
-        }
-
-        setPitchReliableProperty(true);
-        pitch_state_label_->setText(QStringLiteral("RELIABLE PITCH"));
-        pitch_note_label_->setText(QString::fromStdString(display.note_name));
-        pitch_frequency_value_->setText(
-            QStringLiteral("%1 Hz").arg(display.frequency_hz, 0, 'f', 2));
-        const auto sign = display.cents_deviation >= 0.0
-            ? QStringLiteral("+") : QStringLiteral("−");
-        pitch_cents_value_->setText(QStringLiteral("%1%2")
-            .arg(sign)
-            .arg(std::abs(display.cents_deviation), 0, 'f', 1));
-        pitch_quality_value_->setText(
-            QStringLiteral("%1%").arg(display.raw.voicing_quality * 100.0, 0, 'f', 0));
-        pitch_detail_label_->setText(QStringLiteral("Raw %1 Hz · RMS %2%3")
-            .arg(display.raw.frequency_hz, 0, 'f', 2)
-            .arg(display.raw.rms_level, 0, 'f', 3)
-            .arg(replayed ? QStringLiteral(" · replayed take") : QString{}));
-    }
-
-    void resetPitchAnalysis(const bool continue_from_latest) {
-        pitch_processor_.cancel();
-        pitch_smoother_ = core::PitchSmoother(pitchConfig().smoothing_window);
-        next_pitch_frame_ = 0;
-        if (continue_from_latest) {
-            const auto metrics = recorder_.pollMetrics();
-            const auto frame_size = static_cast<std::uint64_t>(pitchConfig().frame_size);
-            if (metrics.frame_count > frame_size) {
-                next_pitch_frame_ = metrics.frame_count - frame_size;
-            }
-        }
-        showNoReliablePitch(QStringLiteral("Waiting for a stable voiced analysis window."));
-        if (const auto format = recorder_.currentFormat()) {
-            updatePitchLatency(format->sample_rate_hz);
-        } else {
-            updatePitchLatency();
-        }
-    }
-
-    void schedulePitchAnalysis(const core::RecordingMetrics& metrics) {
-        if (pitch_processor_.isBusy()) {
-            return;
-        }
-        const auto format = recorder_.currentFormat();
-        if (!format) {
-            return;
-        }
-        const auto config = pitchConfig();
-        updatePitchLatency(format->sample_rate_hz);
-        if (!config.isValid(format->sample_rate_hz)) {
-            showNoReliablePitch(QStringLiteral(
-                "These settings cannot cover the selected range at this sample rate. Increase Frame or raise Minimum."));
-            return;
-        }
-        const auto frame_size = static_cast<std::uint64_t>(config.frame_size);
-        const auto hop_size = static_cast<std::uint64_t>(config.hop_size);
-        if (metrics.frame_count < frame_size) {
-            showNoReliablePitch(QStringLiteral("Waiting for the first complete analysis window."));
-            return;
-        }
-        if (next_pitch_frame_ + frame_size > metrics.frame_count) {
-            return;
-        }
-
-        constexpr std::uint64_t maximum_batch = 4;
-        const auto ready = 1U + (metrics.frame_count - next_pitch_frame_ - frame_size) / hop_size;
-        if (ready > maximum_batch) {
-            const auto latest_start = metrics.frame_count - frame_size;
-            const auto retained_span = (maximum_batch - 1U) * hop_size;
-            next_pitch_frame_ = latest_start > retained_span
-                ? latest_start - retained_span : 0;
-            pitch_smoother_.reset();
-        }
-
-        std::vector<PitchFrameJob> jobs;
-        jobs.reserve(static_cast<std::size_t>(maximum_batch));
-        auto cursor = next_pitch_frame_;
-        while (jobs.size() < maximum_batch && cursor + frame_size <= metrics.frame_count) {
-            auto samples = recorder_.copyMonoFrames(cursor, config.frame_size);
-            if (!samples) {
-                break;
-            }
-            jobs.push_back({cursor, std::move(*samples)});
-            cursor += hop_size;
-        }
-        if (jobs.empty()) {
-            return;
-        }
-        if (pitch_processor_.analyze(
-                std::move(jobs), format->sample_rate_hz, config,
-                [this, sample_rate = format->sample_rate_hz](LivePitchBatchResult result) {
-                    std::optional<core::DisplayPitchEstimate> latest;
-                    for (const auto& raw : result.estimates) {
-                        latest = pitch_smoother_.process(raw, pitchConfig().reference_a4_hz);
-                    }
-                    if (latest) {
-                        presentPitch(*latest, result.processing_milliseconds);
-                    } else {
-                        updatePitchLatency(sample_rate, result.processing_milliseconds);
-                    }
-                    updateUi();
-                })) {
-            next_pitch_frame_ = cursor;
-        }
-    }
-
-    void replaySavedTake() {
-        const auto recording = recorder_.recording();
-        if (!recording) {
-            showNoReliablePitch(QStringLiteral("There is no saved take to analyze."));
-            return;
-        }
-        const auto config = pitchConfig();
-        if (!config.isValid(recording->format().sample_rate_hz)) {
-            showNoReliablePitch(QStringLiteral(
-                "These settings are invalid for the saved take's sample rate."));
-            return;
-        }
-        pitch_smoother_.reset();
-        showNoReliablePitch(QStringLiteral("Analyzing the saved in-memory take on a worker…"));
-        if (!pitch_processor_.replay(
-                recording, config, [this, recording](ReplayPitchResult result) {
-                    if (result.estimates.empty()) {
-                        showNoReliablePitch(QStringLiteral(
-                            "The saved take is shorter than one analysis window."));
-                    } else {
-                        presentPitch(
-                            result.estimates.back(), result.processing_milliseconds, true);
-                    }
-                    updatePitchLatency(
-                        recording->format().sample_rate_hz, result.processing_milliseconds);
-                    updateUi();
-                })) {
-            showNoReliablePitch(QStringLiteral("Pitch analysis is already running."));
-        }
-        updateUi();
     }
 
     void clearPhraseConversion(const QString& message, const bool clear_editor) {
@@ -1446,7 +1179,6 @@ private:
         stopMelodyPlayback();
         playback_.stop();
         cue_playback_.stop();
-        pitch_processor_.cancel();
         phrase_processor_.cancel();
         applying_project_ = true;
         const auto& project = *loaded.project;
@@ -1496,6 +1228,7 @@ private:
         updateMetadata();
         last_conversion_.reset();
         project_path_ = source;
+        playback_start_seconds_ = 0.0; showTransportPosition(0.0);
         loop_range_.reset(); loop_enabled_ = false; loop_tool_ = false;
         playlist_->setLoopTool(false); piano_roll_->setLoopTool(false);
         dirty_ = false;
@@ -1518,13 +1251,16 @@ private:
         playlist_->setPlayheadSeconds(seconds);
     }
 
-    void stopMelodyPlayback(const QString& message = {}) {
+    void stopMelodyPlayback(const QString& message = {}, const bool reset_position = false) {
         audition_playback_.stop();
         const auto was_active = midi_playback_.isPlaying() || midi_playback_.isPreparing()
             || midi_playback_.isPaused();
+        if (reset_position) { playback_start_seconds_ = 0.0; }
+        else if (midi_playback_.isPlaying() || midi_playback_.isPaused()) {
+            playback_start_seconds_ = midi_playback_.positionSeconds();
+        }
         midi_playback_.stop();
-        playback_start_seconds_ = 0.0;
-        showTransportPosition(0.0);
+        showTransportPosition(playback_start_seconds_);
         if (was_active && !message.isEmpty()) {
             editor_status_label_->setText(message);
             workspace_message_label_->setText(message);
@@ -1579,21 +1315,11 @@ private:
                 "Add or convert at least one valid note before exporting."));
             return;
         }
-        auto sequence = core::MidiTimeline::fromTimedNotes(
-            note_editor_.projectedNotes(), tempo_spin_->value(), ticks_per_quarter_);
+        auto sequence = note_editor_.exportSequence(tempo_spin_->value(), ticks_per_quarter_);
         if (!sequence) {
             phrase_status_label_->setText(QStringLiteral(
                 "The edited notes could not be represented safely as MIDI."));
             return;
-        }
-        for (std::size_t track = 0; track < note_editor_.trackCount(); ++track) {
-            const auto channel = static_cast<std::uint8_t>(track >= 9 ? track + 1 : track);
-            sequence->program_changes.push_back({channel,
-                core::instrumentVoiceMidiProgram(note_editor_.tracks()[track].instrument)});
-            for (const auto& region : note_editor_.regions()) {
-                if (region.track != track) { continue; }
-                for (const auto index : region.note_indices) { sequence->notes[index].channel = channel; }
-            }
         }
         auto destination = QFileDialog::getSaveFileName(
             window_,
@@ -1635,8 +1361,6 @@ private:
         QObject::connect(record_button_, &QPushButton::clicked, window_, [this] { startRecording(); });
         QObject::connect(stop_button_, &QPushButton::clicked, window_, [this] { stopRecording(); });
         QObject::connect(play_button_, &QPushButton::clicked, window_, [this] { togglePlayback(); });
-        QObject::connect(replay_analysis_button_, &QPushButton::clicked, window_,
-            [this] { replaySavedTake(); });
         QObject::connect(convert_button_, &QPushButton::clicked, window_,
             [this] { beginPhraseConversion(conversion_tabs_->currentIndex() == 1); });
         QObject::connect(cancel_conversion_button_, &QPushButton::clicked, window_,
@@ -1675,7 +1399,7 @@ private:
             if (midi_playback_.isPlaying()) { toggleMidiPlayback(); }
         });
         QObject::connect(piano_stop_button_, &QPushButton::clicked, window_, [this] {
-            stopMelodyPlayback(QStringLiteral("Playback stopped.")); updateUi();
+            stopMelodyPlayback(QStringLiteral("Playback stopped."), true); updateUi();
         });
         QObject::connect(undo_button_, &QPushButton::clicked, window_,
             [this] { piano_roll_->undo(); });
@@ -1727,11 +1451,31 @@ private:
         QObject::connect(progression_edit_, &QLineEdit::textChanged, window_, [this] { updateProgressionUi(); updateUi(); });
         QObject::connect(chord_beats_spin_, &QSpinBox::valueChanged, window_, [this] { updateProgressionUi(); });
         QObject::connect(progression_add_button_, &QPushButton::clicked, window_, [this] { addChordProgression(); });
-        QObject::connect(track_instrument_combo_, &QComboBox::currentIndexChanged, window_, [this] {
-            const auto voice = static_cast<core::InstrumentVoice>(track_instrument_combo_->currentData().toInt());
-            if (note_editor_.setTrackInstrument(playlist_->selectedTrack(), voice) == core::NoteEditResult::applied) {
-                stopMelodyPlayback(); markDirty(); updateEditorUi(); updateUi();
-            }
+        auto track_changed = [this](core::NoteEditResult result) {
+            if (result != core::NoteEditResult::applied) { return; }
+            stopMelodyPlayback(); markDirty(); playlist_->refresh(); piano_roll_->refresh(); updateEditorUi(); updateUi();
+        };
+        for (auto* combo : {track_instrument_combo_, playlist_instrument_combo_}) {
+            QObject::connect(combo, &QComboBox::currentIndexChanged, window_, [this, combo, track_changed] {
+                track_changed(note_editor_.setTrackInstrument(playlist_->selectedTrack(),
+                    static_cast<core::InstrumentVoice>(combo->currentData().toInt())));
+            });
+        }
+        QObject::connect(playlist_kind_combo_, &QComboBox::currentIndexChanged, window_, [this, track_changed] {
+            track_changed(note_editor_.setTrackKind(playlist_->selectedTrack(),
+                static_cast<core::TrackKind>(playlist_kind_combo_->currentData().toInt())));
+        });
+        QObject::connect(mute_track_button_, &QPushButton::toggled, window_, [this, track_changed](bool muted) {
+            track_changed(note_editor_.setTrackMuted(playlist_->selectedTrack(), muted));
+        });
+        QObject::connect(delete_track_button_, &QPushButton::clicked, window_, [this, track_changed] {
+            const auto track = playlist_->selectedTrack();
+            track_changed(note_editor_.deleteTrack(track));
+            playlist_->selectTrack(std::min(track, note_editor_.trackCount() - 1));
+            workspace_message_label_->setText(QStringLiteral("Track deleted. Undo restores the track and its notes."));
+        });
+        QObject::connect(show_other_tracks_, &QCheckBox::toggled, window_, [this](bool show) {
+            piano_roll_->setShowOtherTracks(show);
         });
         piano_roll_->setAuditionCallback([this](std::uint8_t pitch) {
             if (recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) { return; }
@@ -1810,7 +1554,7 @@ private:
         auto* outputs = new QMediaDevices(window_);
         QObject::connect(outputs, &QMediaDevices::audioOutputsChanged, window_, [this] { refreshOutputLabel(); });
         QObject::connect(midi_stop_button_, &QPushButton::clicked, window_, [this] {
-            stopMelodyPlayback(QStringLiteral("Playback stopped.")); cue_playback_.stop(); updateUi();
+            stopMelodyPlayback(QStringLiteral("Playback stopped."), true); cue_playback_.stop(); updateUi();
         });
         QObject::connect(metronome_button_, &QPushButton::toggled, window_, [this] {
             stopMelodyPlayback();
@@ -1831,9 +1575,9 @@ private:
                 applyRhythmSnap();
                 markDirty(); updateUi();
             });
-        playlist_->setSeekCallback([this](double seconds) {
+        const auto seek = [this](double seconds) {
             if (midi_playback_.isPreparing()) {
-                showTransportPosition(playback_start_seconds_); return;
+                stopMelodyPlayback();
             }
             if (midi_playback_.isPlaying() || midi_playback_.isPaused()) {
                 midi_playback_.seek(seconds);
@@ -1841,7 +1585,9 @@ private:
             }
             playback_start_seconds_ = seconds;
             showTransportPosition(seconds);
-        });
+        };
+        playlist_->setSeekCallback(seek);
+        piano_roll_->setSeekCallback(seek);
         playlist_->setOpenEditorCallback([this] {
             showFeature(piano_dialog_);
             piano_roll_->refresh(true);
@@ -1874,22 +1620,6 @@ private:
             refreshDevices();
         });
         QObject::connect(permission_button_, &QPushButton::clicked, window_, [this] { requestPermission(); });
-        QObject::connect(frame_size_combo_, &QComboBox::currentIndexChanged, window_,
-            [this](const int) { resetPitchAnalysis(true); });
-        QObject::connect(hop_size_combo_, &QComboBox::currentIndexChanged, window_,
-            [this](const int) { resetPitchAnalysis(true); });
-        QObject::connect(gate_spin_, &QDoubleSpinBox::valueChanged, window_,
-            [this](const double) { resetPitchAnalysis(true); });
-        QObject::connect(minimum_pitch_spin_, &QSpinBox::valueChanged, window_,
-            [this](const int value) {
-                maximum_pitch_spin_->setMinimum(value + 1);
-                resetPitchAnalysis(true);
-            });
-        QObject::connect(maximum_pitch_spin_, &QSpinBox::valueChanged, window_,
-            [this](const int value) {
-                minimum_pitch_spin_->setMaximum(value - 1);
-                resetPitchAnalysis(true);
-            });
         QObject::connect(&monitor_, &QTimer::timeout, window_, [this] { poll(); });
         capture_.setDevicesChangedCallback([this] {
             QMetaObject::invokeMethod(window_, [this] { refreshDevices(); }, Qt::QueuedConnection);
@@ -1978,7 +1708,6 @@ private:
             phrase_processor_.cancel();
             clearPhraseConversion(QStringLiteral(
                 "Recording in progress. After Stop, conversion adds a new region; existing regions are retained."), false);
-            resetPitchAnalysis(false);
             level_meter_->setLevel(0.0F, false);
             clip_label_->setVisible(false);
             setStatus(QStringLiteral("Recording… hum or sing one monophonic phrase."), false);
@@ -2075,7 +1804,6 @@ private:
             clip_label_->setVisible(metrics.clipped);
             duration_label_->setText(durationText(metrics.duration_seconds, recorder_.maximumDurationSeconds()));
             samples_value_->setText(QString::number(metrics.sample_count));
-            schedulePitchAnalysis(metrics);
             if (cue_playback_.isPlaying() && metronome_button_->isChecked()) {
                 const auto beat = static_cast<int>(std::floor(cue_playback_.positionSeconds() * tempo_spin_->value() / 60.0)) % 4 + 1;
                 record_beat_label_->setText(QStringLiteral("Beat %1 / 4 · recording").arg(beat));
@@ -2161,11 +1889,26 @@ private:
     }
 
     void updateEditorUi() {
-        { const QSignalBlocker blocker(track_instrument_combo_);
-          track_instrument_combo_->setCurrentIndex(track_instrument_combo_->findData(
-              static_cast<int>(note_editor_.tracks()[playlist_->selectedTrack()].instrument))); }
         playlist_->setTempo(tempo_spin_->value());
         playlist_->refresh();
+        const auto track = playlist_->selectedTrack();
+        const auto& definition = note_editor_.tracks()[track];
+        piano_roll_->setActiveTrack(track);
+        piano_dialog_->setWindowTitle(QStringLiteral("Piano roll — Track %1 · %2")
+            .arg(track + 1).arg(QString::fromLatin1(core::trackKindName(definition.kind))));
+        piano_title_->setText(piano_dialog_->windowTitle());
+        selected_track_label_->setText(QStringLiteral("Track %1").arg(track + 1));
+        for (auto* combo : {track_instrument_combo_, playlist_instrument_combo_}) {
+            const QSignalBlocker blocker(combo);
+            combo->setCurrentIndex(combo->findData(static_cast<int>(definition.instrument)));
+        }
+        { const QSignalBlocker blocker(playlist_kind_combo_);
+          playlist_kind_combo_->setCurrentIndex(playlist_kind_combo_->findData(static_cast<int>(definition.kind))); }
+        { const QSignalBlocker blocker(mute_track_button_);
+          mute_track_button_->setChecked(definition.muted);
+          mute_track_button_->setText(definition.muted ? QStringLiteral("Unmute track") : QStringLiteral("Mute track")); }
+        { const QSignalBlocker blocker(conversion_tabs_);
+          conversion_tabs_->setCurrentIndex(definition.kind == core::TrackKind::chords ? 1 : 0); }
         playlist_status_label_->setText(QStringLiteral(
             "%1 track(s) · %2 region(s) · %3 notes · New takes go to Track %4. Drag regions to arrange; double-click to correct notes. %5 · Magnet %6.")
             .arg(note_editor_.trackCount()).arg(note_editor_.regions().size())
@@ -2246,8 +1989,6 @@ private:
         play_button_->setEnabled(!recording_active && has_audio);
         play_button_->setText(playback_.isPlaying() || playback_.isPreparing()
             ? QStringLiteral("Stop playback") : QStringLiteral("Play original"));
-        replay_analysis_button_->setEnabled(
-            !recording_active && has_audio && !pitch_processor_.isBusy());
         convert_button_->setEnabled(
             !recording_active && has_audio && !phrase_processor_.isBusy());
         cancel_conversion_button_->setEnabled(phrase_processor_.isBusy());
@@ -2262,7 +2003,10 @@ private:
         chord_beats_spin_->setEnabled(!recording_active && !phrase_processor_.isBusy());
         progression_add_button_->setEnabled(!recording_active && !phrase_processor_.isBusy()
             && core::parseChordDegrees(progression_edit_->text().toStdString()).has_value());
-        track_instrument_combo_->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        for (QWidget* control : {static_cast<QWidget*>(track_instrument_combo_), static_cast<QWidget*>(playlist_instrument_combo_),
+                 static_cast<QWidget*>(playlist_kind_combo_), static_cast<QWidget*>(mute_track_button_), static_cast<QWidget*>(delete_track_button_)}) {
+            control->setEnabled(!recording_active && !phrase_processor_.isBusy());
+        }
         for (auto* button : degree_buttons_) { button->setEnabled(!recording_active && !phrase_processor_.isBusy()); }
         export_button_->setEnabled(
             !recording_active && !phrase_processor_.isBusy()
@@ -2340,9 +2084,7 @@ private:
     QtMidiPlayback midi_playback_;
     QtMidiPlayback cue_playback_;
     QtMidiPlayback audition_playback_;
-    PitchLabProcessor pitch_processor_;
     PhraseConversionProcessor phrase_processor_;
-    core::PitchSmoother pitch_smoother_;
     core::NoteEditor note_editor_;
     QTimer monitor_;
     QLabel* project_name_label_{nullptr};
@@ -2361,19 +2103,6 @@ private:
     QLabel* sample_rate_value_{nullptr};
     QLabel* channels_value_{nullptr};
     QLabel* samples_value_{nullptr};
-    QLabel* pitch_state_label_{nullptr};
-    QLabel* pitch_note_label_{nullptr};
-    QLabel* pitch_frequency_value_{nullptr};
-    QLabel* pitch_cents_value_{nullptr};
-    QLabel* pitch_quality_value_{nullptr};
-    QLabel* pitch_detail_label_{nullptr};
-    QLabel* latency_label_{nullptr};
-    QComboBox* frame_size_combo_{nullptr};
-    QComboBox* hop_size_combo_{nullptr};
-    QDoubleSpinBox* gate_spin_{nullptr};
-    QSpinBox* minimum_pitch_spin_{nullptr};
-    QSpinBox* maximum_pitch_spin_{nullptr};
-    QPushButton* replay_analysis_button_{nullptr};
     QLabel* phrase_status_label_{nullptr};
     QProgressBar* phrase_progress_{nullptr};
     QPushButton* convert_button_{nullptr};
@@ -2382,6 +2111,13 @@ private:
     QComboBox* chord_key_combo_{nullptr};
     QComboBox* chord_scale_combo_{nullptr};
     QComboBox* track_instrument_combo_{nullptr};
+    QComboBox* playlist_instrument_combo_{nullptr};
+    QComboBox* playlist_kind_combo_{nullptr};
+    QPushButton* mute_track_button_{nullptr};
+    QPushButton* delete_track_button_{nullptr};
+    QLabel* selected_track_label_{nullptr};
+    QLabel* piano_title_{nullptr};
+    QCheckBox* show_other_tracks_{nullptr};
     QCheckBox* connect_chords_check_{nullptr};
     QCheckBox* melody_snap_check_{nullptr};
     QLineEdit* progression_edit_{nullptr};
@@ -2418,7 +2154,6 @@ private:
     PlaylistWidget* playlist_{nullptr};
     QDialog* recording_dialog_{nullptr};
     QDialog* piano_dialog_{nullptr};
-    QDialog* pitch_dialog_{nullptr};
     QLabel* playlist_status_label_{nullptr};
     QLabel* workspace_message_label_{nullptr};
     QPushButton* open_recorder_button_{nullptr};
@@ -2442,7 +2177,6 @@ private:
     QSlider* horizontal_zoom_slider_{nullptr};
     QSlider* vertical_zoom_slider_{nullptr};
     std::optional<core::PhraseConversionResult> last_conversion_;
-    std::uint64_t next_pitch_frame_{0};
     float displayed_level_{0.0F};
     QString project_path_;
     bool dirty_{false};

@@ -188,9 +188,70 @@ void chordAndQuantise() {
         && editor.notes()[0].start_seconds == .25 && editor.notes()[1].start_seconds == .5,
         "quantise snaps every selected onset to its nearest grid line");
 }
+void editableTracks() {
+    using namespace hum::core;
+    NoteEditor editor;
+    expect(editor.replaceAll({{60,96,0,1,0},{62,96,1,1,0,true},{64,96,2,1,0}},
+        {{{0},0,"A"},{{1},1,"B"},{{2},2,"C"}},3), "three-track fixture loads");
+    expect(editor.setTrackKind(1,TrackKind::chords)==NoteEditResult::applied, "track type changes");
+    expect(editor.notes().size()==3 && editor.notes()[1].pitch==62, "type changes preserve canonical notes");
+    expect(editor.setTrackInstrument(1,InstrumentVoice::strings)==NoteEditResult::applied, "track instrument changes");
+    expect(editor.setTrackMuted(0,true)==NoteEditResult::applied, "track mute is undoable");
+    expect(!editor.notes()[0].muted && editor.projectedNotes()[0].muted && editor.projectedNotes()[1].muted,
+        "track mute overlays note mute without overwriting canonical flags");
+    const auto sequence=MidiTimeline::fromTimedNotes(editor.projectedNotes(),120,480);
+    expect(sequence && sequence->notes.size()==1 && sequence->notes[0].pitch==64,
+        "MIDI projection excludes muted tracks and independently muted notes");
+    const auto exported=editor.exportSequence(120,480);
+    expect(exported && exported->notes.size()==1 && exported->notes[0].channel==2
+        && StandardMidiFileExporter::serialize(*exported).has_value(), "export routes surviving notes after mute filtering without stale indices");
+    editor.setMagnetEnabled(true);
+    expect(editor.projectedNotes()[0].muted, "Magnet refresh preserves track mute");
+    expect(editor.undo() && !editor.tracks()[0].muted && editor.projectedNotes()[1].muted,
+        "undo track mute leaves individual note mute intact");
+    expect(editor.redo() && editor.tracks()[0].muted, "redo restores track mute");
+    ProjectDocument project;
+    project.canonical_notes=editor.notes();project.playlist_regions=editor.regions();
+    project.track_count=editor.trackCount();project.tracks=editor.tracks();
+    const auto encoded=ProjectFileCodec::encode(project);
+    const auto decoded=ProjectFileCodec::decode(encoded.value_or(""));
+    expect(decoded && decoded.project->tracks==project.tracks && !decoded.project->canonical_notes[0].muted,
+        "schema 5 persists track mute/type/instrument independently of note mute");
+    const auto legacy=ProjectFileCodec::decode(
+        "HUM_TO_SING_PROJECT 4\ntempo_bpm 120\nticks_per_quarter 480\nroot_pitch_class 0\n"
+        "scale_mode major\nmagnet_enabled 0\nrhythm_snap_enabled 0\nrhythm_snap_seconds 0.125\n"
+        "metronome_enabled 0\ngrid_division 16\naudio_storage omitted\nnote_count 0\n"
+        "track_count 1\ntrack chords strings\nregion_count 0\nend\n");
+    expect(legacy && !legacy.project->tracks[0].muted && legacy.project->tracks[0].kind==TrackKind::chords,
+        "schema 4 migrates with unmuted tracks and retained types/instruments");
+    auto invalid=*encoded;
+    const auto flag=invalid.find("track melody grand_piano 1");
+    invalid.replace(flag,std::string("track melody grand_piano 1").size(),"track melody grand_piano 2");
+    expect(!ProjectFileCodec::decode(invalid), "invalid track mute flags reject the whole project");
+    expect(editor.selectMany({0,1,2}), "cross-track selection can be constructed in core");
+    expect(editor.deleteTrack(1)==NoteEditResult::applied && editor.trackCount()==2,
+        "delete track removes its lane transactionally");
+    expect(editor.notes().size()==2 && editor.notes()[1].pitch==64 && editor.trackForNote(1)==1
+        && editor.regions()[1].note_indices==std::vector<std::size_t>{1}, "deletion remaps notes and later lanes");
+    expect(editor.selectedIndices().empty(), "deletion clears stale selected indices");
+    expect(editor.undo() && editor.trackCount()==3 && editor.notes()[1].pitch==62
+        && editor.tracks()[1].instrument==InstrumentVoice::strings, "one undo restores track notes and settings");
+    expect(editor.deleteTrack(9)==NoteEditResult::invalid_index, "invalid track deletion is rejected");
+    NoteEditor empty;
+    expect(empty.add({60,96,0,1,0},0)==NoteEditResult::applied, "paint into explicit empty track");
+    expect(empty.deleteTrack(0)==NoteEditResult::applied && empty.trackCount()==1 && empty.notes().empty(),
+        "deleting the last track leaves an empty recording destination");
+    expect(empty.undo() && empty.notes().size()==1, "last-track deletion undoes");
+    for (int i=1;i<16;++i) { static_cast<void>(empty.addTrack()); }
+    expect(empty.add({72,96,1,1,0},15)==NoteEditResult::applied, "sixteenth lane accepts notes");
+    const auto full=empty.exportSequence(120,480);
+    expect(full && full->isValid() && StandardMidiFileExporter::serialize(*full).has_value(),
+        "all sixteen lanes export within the MIDI channel bounds");
+}
+
 }
 int main() {
-    transactions(); persistenceAndExport(); chordAndQuantise();
+    transactions(); persistenceAndExport(); chordAndQuantise(); editableTracks();
     if (failures) { std::cerr<<failures<<" arrangement checks failed.\n"; return 1; }
     std::cout<<"All arrangement tests passed ("<<checks<<" assertions).\n";
 }

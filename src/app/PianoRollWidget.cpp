@@ -134,7 +134,38 @@ std::optional<double> PianoRollWidget::playheadViewportX() const noexcept {
         - horizontalScrollBar()->value();
 }
 
+bool PianoRollWidget::editable(const std::size_t index) const {
+    return index < editor_.notes().size() && (!active_track_ || editor_.trackForNote(index) == active_track_);
+}
+
+void PianoRollWidget::restrictSelection() {
+    if (active_track_) { active_track_ = std::min(*active_track_, editor_.trackCount() - 1); }
+    auto indices = editor_.selectedIndices();
+    std::erase_if(indices, [this](auto index) { return !editable(index); });
+    if (indices != editor_.selectedIndices()) { static_cast<void>(editor_.selectMany(std::move(indices))); }
+}
+
+void PianoRollWidget::setActiveTrack(std::optional<std::size_t> track) {
+    if (track) { track = std::min(*track, editor_.trackCount() - 1); }
+    if (active_track_ != track) { active_track_ = track; refresh(true); }
+    else { restrictSelection(); }
+}
+
+void PianoRollWidget::setShowOtherTracks(const bool show) {
+    show_other_tracks_ = show;
+    viewport()->update();
+}
+
+void PianoRollWidget::setSeekCallback(std::function<void(double)> callback) { seek_ = std::move(callback); }
+
+void PianoRollWidget::seekAt(const double x) {
+    const auto seconds = std::clamp(transform_.xToTime(contentX(x)), 0.0, 600.0);
+    setPlayheadSeconds(seconds);
+    if (seek_) { seek_(seconds); }
+}
+
 void PianoRollWidget::refresh(const bool focus_notes) {
+    restrictSelection();
     drag_mode_ = DragMode::none;
     drag_preview_.reset();
     drag_origin_pitch_.reset();
@@ -157,16 +188,21 @@ void PianoRollWidget::focusNotes() {
     auto minimum_pitch = 127;
     auto maximum_pitch = 0;
     double first_start = std::numeric_limits<double>::max();
-    if (const auto selected = editor_.selectedIndex()) {
+    if (const auto selected = editor_.selectedIndex(); selected && editable(*selected)) {
         const auto& note = editor_.projectedNotes()[*selected];
         minimum_pitch = maximum_pitch = note.pitch;
         first_start = note.start_seconds;
     } else {
-        for (const auto& note : editor_.projectedNotes()) {
+        for (std::size_t i = 0; i < editor_.notes().size(); ++i) {
+            if (!editable(i)) { continue; }
+            const auto& note = editor_.projectedNotes()[i];
             minimum_pitch = std::min(minimum_pitch, static_cast<int>(note.pitch));
             maximum_pitch = std::max(maximum_pitch, static_cast<int>(note.pitch));
             first_start = std::min(first_start, note.start_seconds);
         }
+    }
+    if (first_start == std::numeric_limits<double>::max()) {
+        first_start = playhead_seconds_.value_or(0.0); minimum_pitch = maximum_pitch = 60;
     }
     const auto center_pitch = static_cast<std::uint8_t>((minimum_pitch + maximum_pitch) / 2);
     verticalScrollBar()->setValue(static_cast<int>(std::lround(
@@ -205,12 +241,13 @@ void PianoRollWidget::addNoteAtViewportCenter() {
         rhythm_snap_.apply(content_time),
         kDefaultAddedDurationSeconds,
         0,
-    });
+    }, active_track_);
     showEditResult(result, QStringLiteral("Added %1.").arg(
         QString::fromStdString(core::midiNoteName(pitch))));
 }
 
 void PianoRollWidget::deleteSelected() {
+    restrictSelection();
     showEditResult(editor_.deleteSelected(), QStringLiteral("Deleted the selected note."));
 }
 
@@ -306,7 +343,16 @@ void PianoRollWidget::paintEvent(QPaintEvent*) {
         painter.drawLine(QPointF(x, grid_top), QPointF(x, viewport()->height()));
     }
 
+    // Draw references first so active notes remain visible at overlapping pitches/times.
+    if (show_other_tracks_ && active_track_) {
+        painter.setPen(QPen(QColor("#b1b4b8"), 1, Qt::DashLine));
+        painter.setBrush(QColor("#e0e2e5"));
+        for (std::size_t i = 0; i < editor_.notes().size(); ++i) {
+            if (!editable(i)) { painter.drawRoundedRect(noteViewportRect(i), 4.0, 4.0); }
+        }
+    }
     for (std::size_t index = 0; index < editor_.notes().size(); ++index) {
+        if (!editable(index)) { continue; }
         const auto rect = noteViewportRect(index);
         if (!rect.intersects(QRectF(grid_left, grid_top, grid_width, grid_height))) {
             continue;
@@ -454,6 +500,7 @@ void PianoRollWidget::setLoopChangedCallback(std::function<void(core::LoopRange)
     loop_changed_ = std::move(callback);
 }
 void PianoRollWidget::mousePressEvent(QMouseEvent* event) {
+    restrictSelection();
     if (loop_tool_ && event->button() == Qt::LeftButton && event->position().x() >= kPitchAxisWidth) {
         setFocus(Qt::MouseFocusReason);
         loop_anchor_ = loopTime(event->position().x());
@@ -467,6 +514,13 @@ void PianoRollWidget::mousePressEvent(QMouseEvent* event) {
         setFocus(Qt::MouseFocusReason);
         event->accept();
         return;
+    }
+    if (event->button() == Qt::LeftButton && event->position().x() >= kPitchAxisWidth
+        && event->position().y() < kTimeAxisHeight) {
+        setFocus(Qt::MouseFocusReason); seekAt(event->position().x()); event->accept(); return;
+    }
+    if (event->button() == Qt::LeftButton && event->position().x() >= kPitchAxisWidth) {
+        seekAt(event->position().x());
     }
     if (event->button() != Qt::LeftButton
         || event->position().x() < kPitchAxisWidth
@@ -541,7 +595,7 @@ void PianoRollWidget::mouseMoveEvent(QMouseEvent* event) {
         marquee_ = QRectF(drag_origin_, event->position()).normalized();
         auto selected = marquee_initial_;
         for (std::size_t index = 0; index < editor_.notes().size(); ++index) {
-            if (marquee_->intersects(noteViewportRect(index))) { selected.push_back(index); }
+            if (editable(index) && marquee_->intersects(noteViewportRect(index))) { selected.push_back(index); }
         }
         static_cast<void>(editor_.selectMany(std::move(selected)));
         notifySelectionChanged(); viewport()->update(); return;
@@ -575,7 +629,7 @@ void PianoRollWidget::mouseReleaseEvent(QMouseEvent* event) {
         const auto rectangle = QRectF(drag_origin_, event->position()).normalized();
         auto selected = marquee_initial_;
         for (std::size_t index = 0; index < editor_.notes().size(); ++index) {
-            if (rectangle.intersects(noteViewportRect(index))) { selected.push_back(index); }
+            if (editable(index) && rectangle.intersects(noteViewportRect(index))) { selected.push_back(index); }
         }
         static_cast<void>(editor_.selectMany(std::move(selected)));
         marquee_.reset(); notifySelectionChanged(); viewport()->update(); return;
@@ -619,7 +673,7 @@ void PianoRollWidget::mouseDoubleClickEvent(QMouseEvent* event) {
     }
     const auto start = rhythm_snap_.apply(transform_.xToTime(contentX(event->position().x())));
     showEditResult(editor_.add({*pitch, 96, start,
-        rhythm_snap_.enabled ? rhythm_snap_.interval_seconds : kDefaultAddedDurationSeconds, 0}),
+        rhythm_snap_.enabled ? rhythm_snap_.interval_seconds : kDefaultAddedDurationSeconds, 0}, active_track_),
         QStringLiteral("Added %1 at %2 seconds.")
             .arg(QString::fromStdString(core::midiNoteName(*pitch)))
             .arg(start, 0, 'f', 3));
@@ -627,7 +681,10 @@ void PianoRollWidget::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void PianoRollWidget::keyPressEvent(QKeyEvent* event) {
     if (event->matches(QKeySequence::SelectAll)) {
-        editor_.selectAll(); notifySelectionChanged(); viewport()->update(); event->accept(); return;
+        std::vector<std::size_t> indices;
+        for (std::size_t i = 0; i < editor_.notes().size(); ++i) { if (editable(i)) { indices.push_back(i); } }
+        static_cast<void>(editor_.selectMany(std::move(indices)));
+        notifySelectionChanged(); viewport()->update(); event->accept(); return;
     }
     if (event->key() == Qt::Key_Escape) {
         loop_anchor_.reset(); loop_preview_.reset();
@@ -687,7 +744,7 @@ double PianoRollWidget::contentY(const double viewport_y) const noexcept {
 std::optional<std::size_t> PianoRollWidget::hitTest(const QPointF& position) const {
     for (std::size_t reverse = editor_.notes().size(); reverse > 0; --reverse) {
         const auto index = reverse - 1;
-        if (noteViewportRect(index).adjusted(-2.0, -1.0, 2.0, 1.0).contains(position)) {
+        if (editable(index) && noteViewportRect(index).adjusted(-2.0, -1.0, 2.0, 1.0).contains(position)) {
             return index;
         }
     }
@@ -798,6 +855,7 @@ void PianoRollWidget::notifyDocumentChanged(const QString& message) {
 }
 
 void PianoRollWidget::notifySelectionChanged() {
+    restrictSelection();
     if (selection_changed_callback_) {
         selection_changed_callback_();
     }

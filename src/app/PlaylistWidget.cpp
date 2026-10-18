@@ -141,8 +141,9 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         p.drawText(QPoint(47, y + 31), QStringLiteral("Track %1 · %2").arg(track + 1)
             .arg(QString::fromLatin1(core::trackKindName(definition.kind))));
         font.setPixelSize(11); font.setBold(false); p.setFont(font); p.setPen(QColor("#777777"));
-        p.drawText(QPoint(47, y + 54), QStringLiteral("%1 · MIDI")
-            .arg(QString::fromLatin1(core::instrumentVoiceName(definition.instrument))));
+        p.drawText(QPoint(47, y + 54), QStringLiteral("%1%2")
+            .arg(QString::fromLatin1(core::instrumentVoiceName(definition.instrument)))
+            .arg(definition.muted ? QStringLiteral(" · MUTED") : QString{}));
         const auto count = std::count_if(editor_.regions().begin(), editor_.regions().end(), [track](const auto& r) { return r.track == track; });
         p.drawText(QPoint(47, y + 82), QStringLiteral("%1 phrase region(s)").arg(count));
         p.setPen(QColor("#dedee1")); p.drawLine(0, y + kLaneHeight, viewport()->width(), y + kLaneHeight);
@@ -164,9 +165,10 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         const auto rect = regionViewportRect(i);
         if (rect.right() < kTrackWidth || rect.left() > viewport()->width() || !rect.intersects(body)) { continue; }
         p.setPen(QPen(QColor(selected_region_ == i ? "#31483a" : "#849b89"), selected_region_ == i ? 2 : 1));
-        p.setBrush(QColor("#dfe8e0")); p.drawRoundedRect(rect, 7, 7);
+        const bool muted = editor_.tracks()[editor_.regions()[i].track].muted;
+        p.setBrush(QColor(muted ? "#e4e4e6" : "#dfe8e0")); p.drawRoundedRect(rect, 7, 7);
         p.save(); p.setClipRect(rect.adjusted(1, 1, -1, -1), Qt::IntersectClip);
-        p.fillRect(QRectF(rect.left(), rect.top(), rect.width(), 25), QColor("#4f6255"));
+        p.fillRect(QRectF(rect.left(), rect.top(), rect.width(), 25), QColor(muted ? "#8b8b91" : "#4f6255"));
         font.setBold(true); p.setFont(font); p.setPen(Qt::white);
         p.drawText(QRectF(rect.left() + 10, rect.top(), rect.width() - 18, 25), Qt::AlignLeft | Qt::AlignVCenter,
             QString::fromStdString(editor_.regions()[i].name));
@@ -255,6 +257,13 @@ void PlaylistWidget::mousePressEvent(QMouseEvent* event) {
     }
     if (event->button() != Qt::LeftButton || event->position().y() < kRulerHeight
         || event->position().y() >= viewport()->height() - kFooterHeight) { return; }
+    setFocus(Qt::MouseFocusReason);
+    if (event->position().x() >= kTrackWidth) {
+        const auto seconds = std::clamp((event->position().x() - kTrackWidth
+            + horizontalScrollBar()->value()) / pixels_per_second_, 0.0, 600.0);
+        setPlayheadSeconds(seconds);
+        if (seek_) { seek_(seconds); }
+    }
     selected_track_ = trackAt(event->position().y()); selected_region_.reset(); dragging_ = false;
     if (event->position().x() >= kTrackWidth) {
         for (std::size_t i = editor_.regions().size(); i-- > 0;) {

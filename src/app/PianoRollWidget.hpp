@@ -25,6 +25,11 @@ public:
     void setTool(Tool tool);
     [[nodiscard]] Tool tool() const noexcept;
     void setTempo(double bpm);
+    void setActiveTrack(std::optional<std::size_t> track);
+    [[nodiscard]] std::optional<std::size_t> activeTrack() const { return active_track_; }
+    void setShowOtherTracks(bool show);
+    [[nodiscard]] bool showOtherTracks() const { return show_other_tracks_; }
+    void setSeekCallback(std::function<void(double)> callback);
 
     void setDocumentChangedCallback(std::function<void()> callback);
     void setSelectionChangedCallback(std::function<void()> callback);
@@ -64,6 +69,12 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private:
+    [[nodiscard]] bool editable(std::size_t index) const;
+    void restrictSelection();
+    void seekAt(double x);
+    std::optional<std::size_t> active_track_;
+    bool show_other_tracks_{false};
+    std::function<void(double)> seek_;
     double loopTime(double x) const;
     bool loop_tool_{false}, loop_enabled_{false};
     std::optional<double> loop_anchor_;
