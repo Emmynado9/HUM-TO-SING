@@ -102,12 +102,21 @@ void persistenceAndExport() {
         expect(sequence && StandardMidiFileExporter::serialize(*sequence).has_value(),
             "arranged notes serialize to Standard MIDI");
     }
-    std::string legacy=*bytes;
-    legacy.replace(legacy.find("PROJECT 2"),9,"PROJECT 1");
-    legacy.erase(legacy.find("track_count")); legacy+="end\n";
-    const auto old=ProjectFileCodec::decode(legacy);
-    expect(old && old.project->schema_version==2 && old.project->track_count==1,
+    // Independent historical fixtures: do not manufacture legacy bytes with the current encoder.
+    const std::string legacy_header =
+        "tempo_bpm 120\nticks_per_quarter 960\nroot_pitch_class 0\nscale_mode major\n"
+        "magnet_enabled 1\nrhythm_snap_enabled 1\nrhythm_snap_seconds 0.3\n"
+        "audio_storage omitted\nnote_count 2\nnote 61 96 0.625 0.5 0\nnote 67 90 2.25 0.5 0\n";
+    const auto old=ProjectFileCodec::decode("HUM_TO_SING_PROJECT 1\n" + legacy_header + "end\n");
+    expect(old && old.project->schema_version==kCurrentProjectSchemaVersion && old.project->track_count==1,
         "version 1 projects upgrade in memory without being overwritten");
+    const auto v2=ProjectFileCodec::decode("HUM_TO_SING_PROJECT 2\n" + legacy_header
+        + "track_count 2\nregion_count 2\nregion 1 \"First\" 1 0\nregion 0 \"Second\" 1 1\nend\n");
+    expect(v2 && v2.project->track_count==2 && v2.project->playlist_regions.size()==2
+        && v2.project->playlist_regions[0].track==1 && v2.project->ticks_per_quarter==960
+        && v2.project->grid_division==0 && v2.project->rhythm_snap.interval_seconds==0.3
+        && !v2.project->metronome_enabled && !v2.project->canonical_notes[0].muted,
+        "version 2 preserves lanes and legacy timing with unmuted notes and metronome off");
     auto corrupt=project; corrupt.playlist_regions[1].note_indices={0};
     expect(!ProjectFileCodec::encode(corrupt),"duplicate ownership cannot be saved");
     corrupt=project; corrupt.playlist_regions[1].note_indices={999};
@@ -115,9 +124,73 @@ void persistenceAndExport() {
     expect(!editor.replaceAll(project.canonical_notes,corrupt.playlist_regions,2),
         "invalid arrangement load preserves the existing editor");
 }
+void chordAndQuantise() {
+    using namespace hum::core;
+    const auto key = makeScaleDefinition(0, ScaleMode::major);
+    const std::vector<TimedMidiNote> hummed{{61,96,0,.2,0},{60,96,.3,.2,0},{66,96,1,.4,0}};
+    const auto smooth = makeDiatonicTriads(hummed, key, true);
+    expect(smooth.size() == 6 && smooth[0].pitch == 60 && smooth[0].duration_seconds == 1
+        && smooth[3].pitch == 65 && smooth[3].start_seconds == 1,
+        "off-key roots snap down on ties, repeated roots merge and pauses connect");
+    const auto detached = makeDiatonicTriads(hummed, key, false);
+    expect(detached.size() == 9 && detached[0].duration_seconds == .2,
+        "disabling smooth chords preserves hummed rests and rearticulations");
+    expect((ScaleDefinition{0,{0,3,7}}).nearestPitch(66) == 67,
+        "off-key root snaps upward when the upper scale pitch is closer");
+    const auto degrees = parseChordDegrees("I, iv - V | vi 7");
+    expect(degrees && *degrees == std::vector<std::uint8_t>{0,3,4,5,6}, "Roman and numeric progression input accepts separators and case");
+    expect(!parseChordDegrees("I VIII") && !parseChordDegrees("I potato") && !parseChordDegrees(""),
+        "malformed progressions fail without partially inserting notes");
+    const auto progression = makeChordProgression({{0,3,4,0}}, key, 2);
+    expect(progression.size() == 12 && progression[0].pitch == 48 && progression[3].pitch == 53
+        && progression[6].pitch == 55 && progression[9].start_seconds == 6,
+        "I IV V I builds C F G C at exact beat-based timing");
+    expect(chordDegreeName(key,1) == "ii · D minor" && chordDegreeName(key,6) == "vii° · B dim",
+        "Roman labels show diatonic minor and diminished qualities");
+    NoteEditor instrument_editor;
+    expect(instrument_editor.setTrackInstrument(0, InstrumentVoice::acoustic_guitar) == NoteEditResult::applied
+        && instrument_editor.tracks()[0].instrument == InstrumentVoice::acoustic_guitar, "existing track instrument can change");
+    expect(instrument_editor.undo() && instrument_editor.tracks()[0].instrument == InstrumentVoice::grand_piano,
+        "instrument change is undoable");
+    const int major_roots[]{0,2,4,5,7,9,11};
+    const int major_thirds[]{4,3,3,4,4,3,3};
+    const int major_fifths[]{7,7,7,7,7,7,6};
+    const int minor_roots[]{0,2,3,5,7,8,10};
+    const int minor_thirds[]{3,3,4,3,3,4,4};
+    const int minor_fifths[]{7,6,7,7,7,7,7};
+    for (const auto mode : {ScaleMode::major, ScaleMode::natural_minor}) {
+        for (std::uint8_t key = 0; key < 12; ++key) {
+            for (int degree = 0; degree < 7; ++degree) {
+                const bool major = mode == ScaleMode::major;
+                const auto pitch = static_cast<std::uint8_t>(48 + key + (major ? major_roots : minor_roots)[degree]);
+                const std::vector<TimedMidiNote> root{{pitch, 93, .3, .7, 0}};
+                const auto chord = makeDiatonicTriads(root, makeScaleDefinition(key, mode));
+                expect(chord.size() == 3 && chord[0].pitch == pitch
+                    && chord[1].pitch == pitch + (major ? major_thirds : minor_thirds)[degree]
+                    && chord[2].pitch == pitch + (major ? major_fifths : minor_fifths)[degree],
+                    "every degree forms the correct major/minor/diminished triad in all twelve keys");
+                for (const auto& note : chord) {
+                    expect(note.start_seconds == .3 && note.duration_seconds == .7 && note.velocity == 93,
+                        "all chord voices retain the hummed root timing and velocity");
+                }
+            }
+        }
+    }
+    const auto triads = makeDiatonicTriads({{{60, 96, .13, .4, 0}, {62, 96, .62, .4, 0}}},
+        makeScaleDefinition(0, ScaleMode::major));
+    expect(triads.size() == 6 && triads[0].pitch == 60 && triads[1].pitch == 64 && triads[2].pitch == 67
+        && triads[3].pitch == 62 && triads[4].pitch == 65 && triads[5].pitch == 69,
+        "hummed C and D roots form C-major and D-minor diatonic triads in C major");
+    NoteEditor editor;
+    expect(editor.replaceAll({{60, 96, .13, .4, 0}, {64, 96, .62, .4, 0}}), "quantise fixture loads");
+    editor.selectAll();
+    expect(editor.quantizeSelected(.25) == NoteEditResult::applied
+        && editor.notes()[0].start_seconds == .25 && editor.notes()[1].start_seconds == .5,
+        "quantise snaps every selected onset to its nearest grid line");
+}
 }
 int main() {
-    transactions(); persistenceAndExport();
+    transactions(); persistenceAndExport(); chordAndQuantise();
     if (failures) { std::cerr<<failures<<" arrangement checks failed.\n"; return 1; }
     std::cout<<"All arrangement tests passed ("<<checks<<" assertions).\n";
 }

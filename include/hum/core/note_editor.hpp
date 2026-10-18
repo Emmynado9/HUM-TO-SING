@@ -23,6 +23,22 @@ enum class NoteOverlapPolicy {
     preserve_independent_events,
 };
 
+enum class TrackKind : std::uint8_t { melody, chords };
+enum class InstrumentVoice : std::uint8_t {
+    grand_piano, electric_piano, acoustic_guitar, electric_guitar, strings,
+};
+
+struct TrackDefinition {
+    TrackKind kind{TrackKind::melody};
+    InstrumentVoice instrument{InstrumentVoice::grand_piano};
+    bool operator==(const TrackDefinition&) const = default;
+};
+
+[[nodiscard]] bool validTrackDefinition(const TrackDefinition& track) noexcept;
+[[nodiscard]] const char* trackKindName(TrackKind kind) noexcept;
+[[nodiscard]] const char* instrumentVoiceName(InstrumentVoice instrument) noexcept;
+[[nodiscard]] std::uint8_t instrumentVoiceMidiProgram(InstrumentVoice instrument) noexcept;
+
 struct RhythmSnap {
     bool enabled{false};
     double interval_seconds{0.125};
@@ -58,10 +74,13 @@ struct PlaylistRegion {
 class NoteEditor final {
 public:
     [[nodiscard]] bool replaceAll(std::vector<TimedMidiNote> notes,
-        std::vector<PlaylistRegion> regions = {}, std::size_t track_count = 1);
+        std::vector<PlaylistRegion> regions = {}, std::size_t track_count = 1,
+        std::vector<TrackDefinition> tracks = {});
     [[nodiscard]] const std::vector<PlaylistRegion>& regions() const noexcept;
     [[nodiscard]] std::size_t trackCount() const noexcept;
-    [[nodiscard]] NoteEditResult addTrack();
+    [[nodiscard]] const std::vector<TrackDefinition>& tracks() const noexcept;
+    [[nodiscard]] NoteEditResult addTrack(TrackDefinition track = {});
+    [[nodiscard]] NoteEditResult setTrackInstrument(std::size_t track, InstrumentVoice instrument);
     [[nodiscard]] NoteEditResult appendRegion(std::vector<TimedMidiNote> notes,
         double offset_seconds, std::size_t track);
     [[nodiscard]] NoteEditResult moveRegion(std::size_t index,
@@ -74,6 +93,12 @@ public:
     [[nodiscard]] std::optional<std::size_t> selectedIndex() const noexcept;
     [[nodiscard]] const TimedMidiNote* selectedNote() const noexcept;
     [[nodiscard]] bool select(std::optional<std::size_t> index) noexcept;
+    [[nodiscard]] std::vector<std::size_t> selectedIndices() const;
+    [[nodiscard]] bool isSelected(std::size_t index) const noexcept;
+    [[nodiscard]] bool selectMany(std::vector<std::size_t> indices);
+    void selectAll();
+    [[nodiscard]] NoteEditResult toggleMuteSelected();
+    [[nodiscard]] NoteEditResult splitSelected(double seconds);
 
     [[nodiscard]] NoteEditResult add(TimedMidiNote note);
     [[nodiscard]] NoteEditResult updateSelected(
@@ -81,6 +106,7 @@ public:
         std::string label = "Edit note");
     [[nodiscard]] NoteEditResult moveSelected(double delta_seconds, int delta_pitch);
     [[nodiscard]] NoteEditResult resizeSelected(double duration_seconds);
+    [[nodiscard]] NoteEditResult quantizeSelected(double interval_seconds);
     [[nodiscard]] NoteEditResult deleteSelected();
 
     [[nodiscard]] bool setScale(ScaleDefinition scale);
@@ -105,8 +131,10 @@ private:
     struct State {
         std::vector<TimedMidiNote> notes;
         std::optional<std::size_t> selected_index;
+        std::vector<std::size_t> selected_indices;
         std::vector<PlaylistRegion> regions;
         std::size_t track_count{1};
+        std::vector<TrackDefinition> tracks{{}};
     };
 
     struct HistoryEntry {

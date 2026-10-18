@@ -1,4 +1,5 @@
 #include "PlaylistWidget.hpp"
+#include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -18,6 +19,7 @@ PlaylistWidget::PlaylistWidget(core::NoteEditor& editor, QWidget* parent)
     setAccessibleName(QStringLiteral("Melody playlist"));
     setAccessibleDescription(QStringLiteral("Arrange phrase regions on track lanes. Drag to move, Ctrl+D to duplicate, Delete to remove, Enter to edit notes."));
     setFocusPolicy(Qt::StrongFocus);
+    viewport()->setMouseTracking(true);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setToolTip(QStringLiteral("Drag a region left or right to arrange timing, or up and down to change track. Double-click to edit notes. All lanes use the built-in soft tone."));
@@ -53,10 +55,22 @@ void PlaylistWidget::setPlayheadSeconds(std::optional<double> seconds, bool foll
 void PlaylistWidget::setOpenEditorCallback(std::function<void()> callback) { open_editor_ = std::move(callback); }
 void PlaylistWidget::setDocumentChangedCallback(std::function<void()> callback) { document_changed_ = std::move(callback); }
 void PlaylistWidget::setSelectionChangedCallback(std::function<void()> callback) { selection_changed_ = std::move(callback); }
+void PlaylistWidget::setSeekCallback(std::function<void(double)> callback) { seek_ = std::move(callback); }
+std::optional<double> PlaylistWidget::hoverSeconds() const { return hover_seconds_; }
+void PlaylistWidget::leaveEvent(QEvent* event) {
+    hover_seconds_.reset(); viewport()->update(); QAbstractScrollArea::leaveEvent(event);
+}
 std::optional<std::size_t> PlaylistWidget::selectedRegion() const {
     return selected_region_ && *selected_region_ < editor_.regions().size() ? selected_region_ : std::nullopt;
 }
 std::size_t PlaylistWidget::selectedTrack() const { return std::min(selected_track_, editor_.trackCount() - 1); }
+void PlaylistWidget::selectTrack(const std::size_t track) {
+    if (track >= editor_.trackCount()) { return; }
+    selected_track_ = track;
+    selected_region_.reset();
+    viewport()->update();
+    if (selection_changed_) { selection_changed_(); }
+}
 void PlaylistWidget::changed(core::NoteEditResult result) {
     dragging_ = false; refresh();
     if (result == core::NoteEditResult::applied && document_changed_) { document_changed_(); }
@@ -123,9 +137,12 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         p.fillRect(0, y, 4, kLaneHeight, QColor("#4f6255"));
         p.setPen(QColor("#999999")); p.drawText(QPoint(17, y + 31), QStringLiteral("%1").arg(track + 1, 2, 10, QLatin1Char('0')));
         font.setPixelSize(15); font.setBold(true); p.setFont(font); p.setPen(QColor("#080808"));
-        p.drawText(QPoint(47, y + 31), QStringLiteral("Track %1").arg(track + 1));
+        const auto& definition = editor_.tracks()[track];
+        p.drawText(QPoint(47, y + 31), QStringLiteral("Track %1 · %2").arg(track + 1)
+            .arg(QString::fromLatin1(core::trackKindName(definition.kind))));
         font.setPixelSize(11); font.setBold(false); p.setFont(font); p.setPen(QColor("#777777"));
-        p.drawText(QPoint(47, y + 54), QStringLiteral("Soft tone · MIDI"));
+        p.drawText(QPoint(47, y + 54), QStringLiteral("%1 · MIDI")
+            .arg(QString::fromLatin1(core::instrumentVoiceName(definition.instrument))));
         const auto count = std::count_if(editor_.regions().begin(), editor_.regions().end(), [track](const auto& r) { return r.track == track; });
         p.drawText(QPoint(47, y + 82), QStringLiteral("%1 phrase region(s)").arg(count));
         p.setPen(QColor("#dedee1")); p.drawLine(0, y + kLaneHeight, viewport()->width(), y + kLaneHeight);
@@ -176,6 +193,22 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         p.drawText(QPoint(kTrackWidth + 24, kRulerHeight + 68), QStringLiteral("Open Hum → MIDI to record, or Piano roll to add notes."));
     }
     p.restore();
+    if (const auto range = loop_preview_ ? loop_preview_ : loop_range_) {
+        const auto left = timeToX(range->start_seconds), right = timeToX(range->end_seconds);
+        p.save(); p.setClipRect(QRect(kTrackWidth,0,viewport()->width()-kTrackWidth,viewport()->height()-kFooterHeight));
+        p.fillRect(QRectF(left, 0, right - left, viewport()->height()), QColor(69, 136, 186, loop_enabled_ || loop_preview_ ? 42 : 15));
+        p.setPen(QPen(QColor("#327aa8"), 2, loop_enabled_ || loop_preview_ ? Qt::SolidLine : Qt::DashLine));
+        p.drawLine(QPointF(left,0), QPointF(left,viewport()->height()));
+        p.drawLine(QPointF(right,0), QPointF(right,viewport()->height()));
+        p.drawText(QPointF(left+6,34), QStringLiteral("LOOP %1–%2 s").arg(range->start_seconds,0,'f',2).arg(range->end_seconds,0,'f',2));
+        p.restore();
+    }
+    if (hover_seconds_) {
+        const auto hover_x = timeToX(*hover_seconds_);
+        p.setPen(QPen(QColor("#5687b7"), 1, Qt::DashLine));
+        p.drawLine(QPointF(hover_x, 0), QPointF(hover_x, viewport()->height() - kFooterHeight));
+        p.drawText(QPointF(hover_x + 5, 32), QStringLiteral("%1 s").arg(*hover_seconds_, 0, 'f', 2));
+    }
     if (const auto x = playheadViewportX()) {
         p.setPen(QPen(QColor("#e34848"), 2)); p.drawLine(QPointF(*x, 0), QPointF(*x, viewport()->height() - kFooterHeight));
         p.setBrush(QColor("#e34848")); p.drawPolygon(QPolygonF{QPointF(*x - 5, 0), QPointF(*x + 5, 0), QPointF(*x, 8)});
@@ -192,7 +225,34 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         QStringLiteral("Drag to arrange · Double-click to edit · Ctrl+D duplicate · Delete remove · Ctrl+scroll zoom · Shift+scroll time"));
 }
 void PlaylistWidget::resizeEvent(QResizeEvent* event) { QAbstractScrollArea::resizeEvent(event); updateScrollRange(); }
+double PlaylistWidget::loopTime(double x) const {
+    return std::clamp(rhythm_snap_.apply((x - kTrackWidth + horizontalScrollBar()->value()) / pixels_per_second_), 0.0, 600.0);
+}
+void PlaylistWidget::setLoopTool(bool enabled) {
+    loop_tool_ = enabled; loop_anchor_.reset(); loop_preview_.reset(); viewport()->update();
+}
+void PlaylistWidget::setLoopRange(std::optional<core::LoopRange> range, bool enabled) {
+    loop_range_ = range; loop_enabled_ = enabled; viewport()->update();
+}
+void PlaylistWidget::setLoopChangedCallback(std::function<void(core::LoopRange)> callback) {
+    loop_changed_ = std::move(callback);
+}
 void PlaylistWidget::mousePressEvent(QMouseEvent* event) {
+    if (loop_tool_ && event->button() == Qt::LeftButton && event->position().x() >= kTrackWidth
+        && event->position().y() < viewport()->height() - kFooterHeight) {
+        setFocus(Qt::MouseFocusReason);
+        loop_anchor_ = loopTime(event->position().x());
+        loop_preview_ = core::LoopRange{*loop_anchor_, *loop_anchor_};
+        viewport()->update(); event->accept(); return;
+    }
+    if (event->button() == Qt::LeftButton && event->position().y() < kRulerHeight
+        && event->position().x() >= kTrackWidth) {
+        const auto seconds = std::max(0.0, (event->position().x() - kTrackWidth
+            + horizontalScrollBar()->value()) / pixels_per_second_);
+        setPlayheadSeconds(seconds);
+        if (seek_) { seek_(seconds); }
+        event->accept(); return;
+    }
     if (event->button() != Qt::LeftButton || event->position().y() < kRulerHeight
         || event->position().y() >= viewport()->height() - kFooterHeight) { return; }
     selected_track_ = trackAt(event->position().y()); selected_region_.reset(); dragging_ = false;
@@ -207,43 +267,74 @@ void PlaylistWidget::mousePressEvent(QMouseEvent* event) {
     if (selection_changed_) { selection_changed_(); } viewport()->update(); event->accept();
 }
 void PlaylistWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (loop_anchor_) {
+        const auto time = loopTime(event->position().x());
+        loop_preview_ = core::LoopRange{std::min(*loop_anchor_, time), std::max(*loop_anchor_, time)};
+        viewport()->update(); event->accept(); return;
+    }
+    hover_seconds_ = event->position().x() >= kTrackWidth
+        ? std::optional<double>{std::max(0.0, (event->position().x() - kTrackWidth
+            + horizontalScrollBar()->value()) / pixels_per_second_)} : std::nullopt;
+    viewport()->update();
     if (!dragging_ || !selectedRegion() || !(event->buttons() & Qt::LeftButton)) { return; }
+    updateDragPreview(event->position()); viewport()->update(); event->accept();
+}
+void PlaylistWidget::updateDragPreview(const QPointF& position) {
+    const auto& region = editor_.regions()[*selected_region_];
+    // Selection clicks, including small hand movements, must not quantize a phrase.
+    if ((position - drag_origin_).manhattanLength() < QApplication::startDragDistance()) {
+        drag_delta_seconds_ = 0; drag_track_ = region.track; return;
+    }
     double start = std::numeric_limits<double>::max();
-    for (const auto i : editor_.regions()[*selected_region_].note_indices) { start = std::min(start, editor_.notes()[i].start_seconds); }
-    const auto target = rhythm_snap_.apply(start + (event->position().x() - drag_origin_.x()) / pixels_per_second_);
-    drag_delta_seconds_ = target - start; drag_track_ = trackAt(event->position().y()); viewport()->update(); event->accept();
+    for (const auto i : region.note_indices) { start = std::min(start, editor_.notes()[i].start_seconds); }
+    drag_delta_seconds_ = rhythm_snap_.apply(start + (position.x() - drag_origin_.x()) / pixels_per_second_) - start;
+    drag_track_ = trackAt(position.y());
 }
 void PlaylistWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (loop_anchor_ && event->button() == Qt::LeftButton) {
+        const auto time = loopTime(event->position().x());
+        const core::LoopRange range{std::min(*loop_anchor_, time), std::max(*loop_anchor_, time)};
+        loop_anchor_.reset(); loop_preview_.reset();
+        if (range.isValid()) { loop_range_ = range; if (loop_changed_) { loop_changed_(range); } }
+        viewport()->update(); event->accept(); return;
+    }
     if (event->button() == Qt::LeftButton && dragging_ && selectedRegion()) {
-        double start = std::numeric_limits<double>::max();
-        for (const auto i : editor_.regions()[*selected_region_].note_indices) {
-            start = std::min(start, editor_.notes()[i].start_seconds);
-        }
-        drag_delta_seconds_ = rhythm_snap_.apply(start
-            + (event->position().x() - drag_origin_.x()) / pixels_per_second_) - start;
-        drag_track_ = trackAt(event->position().y());
+        updateDragPreview(event->position());
         const auto result = editor_.moveRegion(*selected_region_, drag_delta_seconds_, drag_track_);
         selected_track_ = drag_track_; changed(result); event->accept();
     }
 }
+void PlaylistWidget::openSelectedRegion() {
+    dragging_ = false;
+    if (const auto index = selectedRegion()) {
+        const auto& region = editor_.regions()[*index];
+        selected_track_ = region.track;
+        static_cast<void>(editor_.select(region.note_indices.front()));
+    }
+    if (selection_changed_) { selection_changed_(); }
+    viewport()->update();
+    if (open_editor_) { open_editor_(); }
+}
 void PlaylistWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (loop_tool_) { event->accept(); return; }
     if (event->button() == Qt::LeftButton && event->position().x() >= kTrackWidth) {
         for (std::size_t i = editor_.regions().size(); i-- > 0;) {
             if (regionViewportRect(i).contains(event->position())) {
-                dragging_ = false; selected_region_ = i;
-                static_cast<void>(editor_.select(editor_.regions()[i].note_indices.front()));
-                if (open_editor_) { open_editor_(); } event->accept(); return;
+                selected_region_ = i; openSelectedRegion(); event->accept(); return;
             }
         }
     }
 }
 void PlaylistWidget::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && loop_anchor_) {
+        loop_anchor_.reset(); loop_preview_.reset(); viewport()->update(); event->accept(); return;
+    }
     if (event->key() == Qt::Key_Escape && dragging_) { dragging_ = false; refresh(); event->accept(); return; }
     if (event->matches(QKeySequence::Undo)) { if (editor_.undo()) { changed(core::NoteEditResult::applied); } }
     else if (event->matches(QKeySequence::Redo)) { if (editor_.redo()) { changed(core::NoteEditResult::applied); } }
     else if (event->key() == Qt::Key_D && event->modifiers() & Qt::ControlModifier) { duplicateSelected(); }
     else if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) { deleteSelected(); }
-    else if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && open_editor_) { open_editor_(); }
+    else if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && open_editor_) { openSelectedRegion(); }
     else { QAbstractScrollArea::keyPressEvent(event); return; }
     event->accept();
 }

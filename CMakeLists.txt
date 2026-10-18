@@ -90,6 +90,10 @@ if(BUILD_TESTING)
     set_tests_properties(hum_simple_synth_tests PROPERTIES LABELS "core;playback")
 
     add_executable(hum_mvp_workflow_tests tests/mvp_workflow_tests.cpp)
+    add_executable(hum_melody_stability_tests tests/melody_stability_tests.cpp)
+    target_link_libraries(hum_melody_stability_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_melody_stability_tests COMMAND hum_melody_stability_tests)
+    set_tests_properties(hum_melody_stability_tests PROPERTIES LABELS "core;pitch;note-extraction")
     target_include_directories(hum_mvp_workflow_tests PRIVATE tests)
     target_link_libraries(hum_mvp_workflow_tests PRIVATE HumToSing::core)
     add_test(NAME hum_mvp_workflow_tests COMMAND hum_mvp_workflow_tests)
@@ -103,7 +107,12 @@ if(HUM_BUILD_GUI)
         find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     endif()
 
-    add_executable(hum_to_sing
+    qt_add_executable(hum_to_sing
+        src/app/EditorToolbar.cpp
+        src/app/EditorToolbar.hpp
+        src/app/ToolIcons.cpp
+        src/app/ToolIcons.hpp
+        src/app/AudioOutputFormat.hpp
         src/app/LevelMeter.cpp
         src/app/LevelMeter.hpp
         src/app/PianoRollWidget.cpp
@@ -143,6 +152,18 @@ if(HUM_BUILD_GUI)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     )
     if(APPLE)
+        add_library(hum_mac_instruments STATIC src/audio/MacInstrumentRenderer.cpp)
+        target_include_directories(hum_mac_instruments PUBLIC src/audio)
+        target_link_libraries(hum_mac_instruments PUBLIC HumToSing::core "-framework AudioToolbox")
+        target_link_libraries(hum_to_sing PRIVATE hum_mac_instruments)
+        if(BUILD_TESTING)
+            add_executable(hum_mac_instrument_tests tests/mac_instrument_tests.cpp)
+            target_link_libraries(hum_mac_instrument_tests PRIVATE hum_mac_instruments)
+            add_test(NAME hum_mac_instrument_tests COMMAND hum_mac_instrument_tests)
+            set_tests_properties(hum_mac_instrument_tests PROPERTIES LABELS "audio;playback" TIMEOUT 60)
+        endif()
+        target_sources(hum_to_sing PRIVATE src/app/MacAudioInput.cpp src/app/MacAudioInput.hpp)
+        target_link_libraries(hum_to_sing PRIVATE "-framework CoreAudio" "-framework AudioToolbox")
         if(CMAKE_OSX_DEPLOYMENT_TARGET)
             set(HUM_MACOS_MINIMUM_VERSION "${CMAKE_OSX_DEPLOYMENT_TARGET}")
         else()
@@ -177,8 +198,11 @@ if(HUM_BUILD_GUI)
         set_tests_properties(hum_app_smoke PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             LABELS "gui;smoke"
-            TIMEOUT 30
+            TIMEOUT 10
         )
+        if(APPLE)
+            set_tests_properties(hum_app_smoke PROPERTIES TIMEOUT 30)
+        endif()
 
         add_executable(hum_piano_roll_ui_tests
             tests/piano_roll_ui_tests.cpp
@@ -186,6 +210,16 @@ if(HUM_BUILD_GUI)
             src/app/PianoRollWidget.hpp
         )
         target_include_directories(hum_piano_roll_ui_tests PRIVATE src/app)
+        add_executable(hum_loop_selection_ui_tests tests/loop_selection_ui_tests.cpp src/app/PianoRollWidget.cpp src/app/PlaylistWidget.cpp)
+        target_include_directories(hum_loop_selection_ui_tests PRIVATE src/app)
+        target_link_libraries(hum_loop_selection_ui_tests PRIVATE HumToSing::core Qt6::Test Qt6::Widgets)
+        add_test(NAME hum_loop_selection_ui_tests COMMAND hum_loop_selection_ui_tests)
+        set_tests_properties(hum_loop_selection_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;playlist;loop")
+        add_executable(hum_playback_loop_tests tests/playback_loop_tests.cpp)
+        target_include_directories(hum_playback_loop_tests PRIVATE src/app)
+        target_link_libraries(hum_playback_loop_tests PRIVATE HumToSing::core Qt6::Core)
+        add_test(NAME hum_playback_loop_tests COMMAND hum_playback_loop_tests)
+        set_tests_properties(hum_playback_loop_tests PROPERTIES LABELS "playback;loop")
         target_link_libraries(hum_piano_roll_ui_tests
             PRIVATE
                 HumToSing::core
@@ -211,6 +245,20 @@ if(HUM_BUILD_GUI)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             LABELS "gui;playlist"
             TIMEOUT 15)
+
+        add_executable(hum_audio_output_format_tests tests/audio_output_format_tests.cpp)
+        target_include_directories(hum_audio_output_format_tests PRIVATE src/app)
+        target_link_libraries(hum_audio_output_format_tests PRIVATE Qt6::Multimedia)
+        add_test(NAME hum_audio_output_format_tests COMMAND hum_audio_output_format_tests)
+        set_tests_properties(hum_audio_output_format_tests PROPERTIES LABELS "gui;playback")
+
+        add_executable(hum_editor_toolbar_ui_tests tests/editor_toolbar_ui_tests.cpp
+            src/app/EditorToolbar.cpp src/app/ToolIcons.cpp src/app/PianoRollWidget.cpp)
+        target_include_directories(hum_editor_toolbar_ui_tests PRIVATE src/app)
+        target_link_libraries(hum_editor_toolbar_ui_tests PRIVATE HumToSing::core Qt6::Test Qt6::Widgets)
+        add_test(NAME hum_editor_toolbar_ui_tests COMMAND hum_editor_toolbar_ui_tests)
+        set_tests_properties(hum_editor_toolbar_ui_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;note-editor" TIMEOUT 15)
 
         add_executable(hum_project_store_tests
             tests/project_store_tests.cpp

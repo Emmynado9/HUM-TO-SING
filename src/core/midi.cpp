@@ -29,6 +29,8 @@ bool MidiSequence::isValid() const noexcept {
         && tempo_bpm > 0.0
         && std::all_of(notes.cbegin(), notes.cend(), [](const MidiNote& note) {
             return note.isValid();
+        }) && std::all_of(program_changes.cbegin(), program_changes.cend(), [](const auto& change) {
+            return change.channel < 16 && change.program < 128;
         });
 }
 
@@ -85,6 +87,7 @@ std::optional<MidiSequence> MidiTimeline::fromTimedNotes(
         if (!note.isValid()) {
             return std::nullopt;
         }
+        if (note.muted) { continue; }
         const auto start = secondsToTicks(note.start_seconds, tempo_bpm, ticks_per_quarter);
         const auto end = secondsToTicks(
             note.start_seconds + note.duration_seconds, tempo_bpm, ticks_per_quarter);

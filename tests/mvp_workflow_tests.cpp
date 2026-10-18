@@ -183,6 +183,25 @@ void testCompleteFakeHardwareWorkflow() {
         "recorded phrase converts successfully after Stop");
     expect(conversion.notes.size() == 3, "known phrase produces three inspectable notes");
 
+    const auto scale = hum::core::makeScaleDefinition(0, hum::core::ScaleMode::major);
+    const auto chords = hum::core::makeDiatonicTriads(conversion.notes, scale);
+    expect(chords.size() == 9, "captured roots expand into three complete chords");
+    const std::vector<int> expected_chords{60,64,67,64,67,71,67,71,74};
+    for (std::size_t i = 0; i < std::min(chords.size(), expected_chords.size()); ++i) {
+        expect(chords[i].pitch == expected_chords[i], "YIN roots map to the expected diatonic chord pitches");
+    }
+    hum::core::NoteEditor chord_editor;
+    expect(chord_editor.addTrack({hum::core::TrackKind::chords, hum::core::InstrumentVoice::grand_piano})
+        == hum::core::NoteEditResult::applied, "chord destination is created");
+    expect(chord_editor.appendRegion(chords, 0, 1) == hum::core::NoteEditResult::applied,
+        "converted chords enter the canonical Playlist region");
+    expect(chord_editor.setScale(scale), "chord editor shares the conversion scale");
+    chord_editor.setMagnetEnabled(true);
+    const auto chord_midi = hum::core::MidiTimeline::fromTimedNotes(chord_editor.projectedNotes(), 96, 480);
+    expect(chord_midi && chord_midi->notes.size() == 9, "all chord voices reach shared playback/export data");
+    const auto chord_audio = hum::core::SimpleSynthRenderer{}.render(chord_editor.projectedNotes(), {});
+    expect(chord_audio && !chord_audio->interleaved_samples.empty(), "captured chord progression renders to local audio");
+
     hum::core::NoteEditor editor;
     expect(editor.replaceAll(conversion.notes), "conversion loads the canonical editor");
     expect(editor.select(0), "songwriter selects the first note");

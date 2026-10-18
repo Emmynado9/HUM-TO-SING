@@ -27,14 +27,15 @@ Defaults:
 | Setting | Value | Purpose |
 |---|---:|---|
 | Onset confirmation | 2 consecutive reliable frames | Suppress one-frame pitch starts |
-| Transition confirmation | 2 consecutive reliable frames | Suppress one-frame note changes |
-| Pitch-transition hysteresis | 65 cents from the active MIDI note | Keep normal small drift/vibrato in one event |
-| Maximum unreliable gap | 35 ms | Bridge short detector dropouts |
+| Transition confirmation | At least 2 supporting frames and 90 ms of voiced evidence | Suppress brief note changes |
+| Octave-sized transition confirmation | At least 2 supporting frames and 180 ms of voiced evidence | Reject short jumps of 12 or more semitones |
+| Pitch-transition hysteresis | 75 cents from the active MIDI note | Keep normal small drift/vibrato in one event |
+| Maximum unreliable gap | 80 ms | Bridge short detector dropouts |
 | Minimum note duration | 80 ms | Remove unstable short fragments |
 | Velocity | fixed 96 | Avoid uncalibrated loudness-to-intent claims |
 | Channel | 0 | MIDI channel 1 on the wire |
 
-Leading/trailing unvoiced frames create no notes. A longer unvoiced gap ends an active note at its last supported frame and requires a new confirmed onset. This makes a clear pause capable of separating repeated pitches. A sustained transition beyond hysteresis must persist for the confirmation count; the boundary is placed at the first supporting transition frame. Pitch values outside 0–127, zero velocity, nonpositive duration, invalid channels, and tick overflow are rejected.
+Leading/trailing unvoiced frames create no notes. A longer unvoiced gap ends an active note at its last supported frame and requires a new confirmed onset. This makes a clear pause capable of separating repeated pitches. A sustained transition beyond hysteresis must satisfy both the frame count and voiced-evidence duration; the boundary is placed at the first supporting transition frame, so confirmation does not shift it later. Unconfirmed voiced changes sustain the current note. Short unreliable gaps can bridge supporting transition evidence, but do not count toward its duration. Pitch values outside 0–127, zero velocity, nonpositive duration, invalid channels, and tick overflow are rejected.
 
 No scale snapping or rhythmic quantization is applied. Vibrato narrower than the transition boundary remains part of the active note. A wider or highly irregular modulation can still cross the boundary and become another note; that is a known tuning tradeoff.
 
@@ -52,7 +53,7 @@ The file writer emits format 0 with one track, one tempo meta event, sorted note
 
 ## Delay and precision
 
-Conversion begins only after recording stops, so there is no real-time transcription latency claim. Boundary uncertainty comes from the detector window, hop, and two-frame confirmation. The explicit automated tolerance is:
+Conversion begins only after recording stops, so there is no real-time transcription latency claim. Boundary uncertainty comes from the detector window and hop. Onsets require two supporting frames; pitch transitions additionally require the duration thresholds above. The existing fixture timing tolerance is:
 
 ```text
 one analysis window + two hops

@@ -1,4 +1,5 @@
 #include "QtAudioPlayback.hpp"
+#include "AudioOutputFormat.hpp"
 
 #include <QAudioDevice>
 #include <QAudioFormat>
@@ -102,12 +103,13 @@ public:
             report(QStringLiteral("No audio output is available. Connect speakers or headphones and try again."), true);
             return;
         }
-        const auto target_format = output_device_.preferredFormat();
-        if (!target_format.isValid() || !output_device_.isFormatSupported(target_format)) {
+        const auto selected_format = chooseOutputFormat(output_device_);
+        if (!selected_format) {
             report(QStringLiteral("The selected audio output has no supported playback format."), true);
             return;
         }
 
+        const auto target_format = *selected_format;
         preparing_ = true;
         const auto generation = generation_;
         report(QStringLiteral("Preparing the original recording…"), false);

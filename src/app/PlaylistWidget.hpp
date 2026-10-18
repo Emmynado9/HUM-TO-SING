@@ -1,5 +1,6 @@
 #pragma once
 #include "hum/core/note_editor.hpp"
+#include "hum/core/loop_range.hpp"
 #include <QAbstractScrollArea>
 #include <QRectF>
 #include <functional>
@@ -18,10 +19,17 @@ public:
     void setOpenEditorCallback(std::function<void()> callback);
     void setDocumentChangedCallback(std::function<void()> callback);
     void setSelectionChangedCallback(std::function<void()> callback);
+    void setSeekCallback(std::function<void(double)> callback);
+    void setLoopTool(bool enabled);
+    void setLoopRange(std::optional<core::LoopRange> range, bool enabled);
+    void setLoopChangedCallback(std::function<void(core::LoopRange)> callback);
+    [[nodiscard]] std::optional<core::LoopRange> loopRange() const { return loop_range_; }
+    [[nodiscard]] std::optional<double> hoverSeconds() const;
     void duplicateSelected();
     void deleteSelected();
     [[nodiscard]] std::optional<std::size_t> selectedRegion() const;
     [[nodiscard]] std::size_t selectedTrack() const;
+    void selectTrack(std::size_t track);
     [[nodiscard]] QRectF regionViewportRect(std::size_t index = 0) const;
     [[nodiscard]] std::optional<double> playheadViewportX() const;
 protected:
@@ -33,10 +41,18 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void wheelEvent(QWheelEvent*) override;
+    void leaveEvent(QEvent*) override;
 private:
+    double loopTime(double x) const;
+    bool loop_tool_{false}, loop_enabled_{false};
+    std::optional<double> loop_anchor_;
+    std::optional<core::LoopRange> loop_range_, loop_preview_;
+    std::function<void(core::LoopRange)> loop_changed_;
     [[nodiscard]] double timeToX(double seconds) const;
     [[nodiscard]] std::size_t trackAt(double y) const;
     void updateScrollRange();
+    void updateDragPreview(const QPointF& position);
+    void openSelectedRegion();
     void changed(core::NoteEditResult result);
     core::NoteEditor& editor_;
     double tempo_bpm_{120.0}, pixels_per_second_{160.0};
@@ -49,5 +65,7 @@ private:
     double drag_delta_seconds_{0};
     std::size_t drag_track_{0};
     std::function<void()> open_editor_, document_changed_, selection_changed_;
+    std::function<void(double)> seek_;
+    std::optional<double> hover_seconds_;
 };
 } // namespace hum::app

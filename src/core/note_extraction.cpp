@@ -84,6 +84,10 @@ bool NoteExtractionConfig::isValid() const noexcept {
         && transition_hysteresis_cents <= 200.0
         && onset_confirmation_frames > 0 && onset_confirmation_frames <= 32
         && transition_confirmation_frames > 0 && transition_confirmation_frames <= 32
+        && std::isfinite(transition_confirmation_seconds)
+        && transition_confirmation_seconds >= 0.0 && transition_confirmation_seconds <= 1.0
+        && std::isfinite(octave_confirmation_seconds)
+        && octave_confirmation_seconds >= transition_confirmation_seconds && octave_confirmation_seconds <= 1.0
         && fixed_velocity >= 1 && fixed_velocity <= 127
         && midi_channel <= 15;
 }
@@ -139,16 +143,16 @@ std::vector<TimedMidiNote> HysteresisNoteSegmenter::segment(
 
         if (!observation) {
             onset.clear();
-            transition.clear();
             if (active && center - active->last_reliable_center
-                    > config.maximum_unreliable_gap_seconds + hop_seconds) {
+                    > config.maximum_unreliable_gap_seconds + hop_seconds + 1e-9) {
                 appendActive(active->last_reliable_center + half_hop);
+                transition.clear();
             }
             continue;
         }
 
         if (active && observation->center_seconds - active->last_reliable_center - hop_seconds
-                > config.maximum_unreliable_gap_seconds) {
+                > config.maximum_unreliable_gap_seconds + 1e-9) {
             appendActive(active->last_reliable_center + half_hop);
             transition.clear();
         }
@@ -168,6 +172,9 @@ std::vector<TimedMidiNote> HysteresisNoteSegmenter::segment(
 
         const auto distance_cents = 100.0
             * std::abs(observation->midi_pitch - static_cast<double>(active->pitch));
+        // Any voiced observation sustains the current note while a change is being verified.
+        // Otherwise an unconfirmed wobble is incorrectly treated as missing audio.
+        active->last_reliable_center = observation->center_seconds;
         if (distance_cents < config.transition_hysteresis_cents
             || observation->nearest_note == active->pitch) {
             active->last_reliable_center = observation->center_seconds;
@@ -176,7 +183,11 @@ std::vector<TimedMidiNote> HysteresisNoteSegmenter::segment(
         }
 
         transition.observe(observation->nearest_note, observation->center_seconds);
-        if (transition.count < config.transition_confirmation_frames) {
+        const auto confirmation = std::abs(transition.pitch - active->pitch) >= 12
+            ? config.octave_confirmation_seconds : config.transition_confirmation_seconds;
+        const auto evidence_seconds = transition.count * hop_seconds;
+        if (transition.count < config.transition_confirmation_frames
+            || evidence_seconds + 1e-9 < confirmation) {
             continue;
         }
 

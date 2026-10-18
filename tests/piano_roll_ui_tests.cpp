@@ -368,10 +368,140 @@ void testAudioClockPlayheadProjection() {
     expect(!roll.playheadViewportX(), "stopping playback removes the playhead");
 }
 
+void testEditingToolsAndGroupGestures() {
+    using namespace hum;
+    core::NoteEditor editor;
+    expect(editor.replaceAll({{61, 96, .5, 1, 0}, {65, 90, 2, 1, 0}}), "tool fixture loads");
+    app::PianoRollWidget roll(editor);
+    roll.resize(900, 420); roll.show(); roll.focusNotes(); settle();
+    auto first = roll.noteViewportRect(0);
+    auto second = roll.noteViewportRect(1);
+    // Release position must finish the marquee even when there was no intermediate move event.
+    QTest::mousePress(roll.viewport(), Qt::LeftButton, Qt::NoModifier,
+        QPoint(static_cast<int>(first.left()) - 12, static_cast<int>(second.top()) - 8));
+    QTest::mouseRelease(roll.viewport(), Qt::LeftButton, Qt::NoModifier,
+        QPoint(static_cast<int>(second.right()) + 12, static_cast<int>(first.bottom()) + 8));
+    expect(editor.selectedIndices().size() == 2 && !editor.canUndo(), "marquee selects two notes without editing");
+    editor.setMagnetEnabled(true); roll.refresh();
+    const auto start = roll.noteViewportRect(1).center().toPoint();
+    QTest::mousePress(roll.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseRelease(roll.viewport(), Qt::LeftButton, Qt::NoModifier, start + QPoint(80, 0));
+    expect(editor.notes()[0].start_seconds == 1 && editor.notes()[1].start_seconds == 2.5
+        && editor.notes()[0].pitch == 61 && editor.undoLabel() == "Move notes",
+        "dragging a non-primary selection moves the whole group and preserves Magnet originals");
+    roll.undo();
+    expect(editor.notes()[0].start_seconds == .5 && !editor.canUndo(), "one undo restores group gesture");
+    roll.setTool(app::PianoRollWidget::Tool::mute);
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, roll.noteViewportRect(0).center().toPoint());
+    expect(editor.notes()[0].muted && editor.notes()[1].muted, "mute tool applies to selected group");
+    roll.setTool(app::PianoRollWidget::Tool::slice);
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, roll.noteViewportRect(0).center().toPoint());
+    expect(editor.notes().size() == 3 && editor.notes()[2].muted && editor.notes()[2].pitch == 61,
+        "slice tool preserves mute and canonical pitch in the new half");
+    roll.undo(); roll.undo();
+    roll.setTool(app::PianoRollWidget::Tool::select);
+    const auto cancel_start = roll.noteViewportRect(0).center().toPoint();
+    QTest::mousePress(roll.viewport(), Qt::LeftButton, Qt::NoModifier, cancel_start);
+    QTest::keyClick(&roll, Qt::Key_Escape);
+    QTest::mouseRelease(roll.viewport(), Qt::LeftButton, Qt::NoModifier, cancel_start + QPoint(100, 0));
+    expect(!editor.canUndo() && editor.notes()[0].start_seconds == .5, "Escape cancels a drag without committing");
+    roll.setTool(app::PianoRollWidget::Tool::paint);
+    roll.setRhythmSnap({true, .25});
+    const auto empty = roll.noteViewportRect(1).center().toPoint() + QPoint(240, 0);
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, empty);
+    expect(editor.notes().size() == 3 && editor.notes().back().duration_seconds == .25,
+        "paint tool creates one grid-length note");
+    roll.setTool(app::PianoRollWidget::Tool::resize);
+    const auto resize_start = roll.noteViewportRect(2).center().toPoint();
+    QTest::mousePress(roll.viewport(), Qt::LeftButton, Qt::NoModifier, resize_start);
+    QTest::mouseRelease(roll.viewport(), Qt::LeftButton, Qt::NoModifier, resize_start + QPoint(80, 0));
+    expect(editor.notes()[2].duration_seconds > .25, "resize tool changes duration from the note body");
+    roll.setTool(app::PianoRollWidget::Tool::erase);
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, roll.noteViewportRect(2).center().toPoint());
+    expect(editor.notes().size() == 2, "erase tool removes the clicked note");
+    roll.setTool(app::PianoRollWidget::Tool::zoom);
+    const auto zoom = roll.transform().pixels_per_second;
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, empty);
+    expect(roll.transform().pixels_per_second > zoom && editor.notes().size() == 2,
+        "zoom tool changes view without adding notes");
+}
+
+void testSelectionDoesNotEditTiming() {
+    using namespace hum;
+    for (const bool snap : {false, true}) {
+        for (const auto tool : {app::PianoRollWidget::Tool::select, app::PianoRollWidget::Tool::resize}) {
+            core::NoteEditor editor;
+            const auto original = note(61, .53, .61);
+            expect(editor.replaceAll({original}), "selection timing fixture loads");
+            app::PianoRollWidget roll(editor);
+            roll.resize(900, 420); roll.show(); roll.refresh(true); settle();
+            roll.setRhythmSnap({snap, .25});
+            roll.setTool(tool);
+            int changes = 0;
+            roll.setDocumentChangedCallback([&] { ++changes; });
+            for (const bool edge : {false, true}) {
+                const auto rect = roll.noteViewportRect(0);
+                const auto start = edge ? QPoint(qRound(rect.right()) - 4, qRound(rect.center().y()))
+                                        : rect.center().toPoint();
+                for (const int jitter : {0, 1}) {
+                    QTest::mousePress(roll.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+                    QTest::mouseRelease(roll.viewport(), Qt::LeftButton, Qt::NoModifier, start + QPoint(jitter, 0));
+                    expect(editor.notes()[0].start_seconds == original.start_seconds
+                        && editor.notes()[0].duration_seconds == original.duration_seconds
+                        && editor.notes()[0].pitch == original.pitch && !editor.canUndo() && changes == 0,
+                        "click or tiny pointer movement selects without snapping, resizing, dirtying or undo history");
+                    expect(editor.selectedIndex() == 0, "timing-preserving click still selects the note");
+                    if (editor.canUndo()) { roll.undo(); changes = 0; }
+                }
+            }
+        }
+    }
+}
+
+void testFocusSelectedNote() {
+    hum::core::NoteEditor editor;
+    expect(editor.replaceAll({note(40, 0, .5), note(96, 90, .5)}),
+        "distant region focus fixture loads");
+    hum::app::PianoRollWidget roll(editor);
+    roll.resize(900, 420); roll.show(); settle();
+    expect(editor.select(1), "later region selects its canonical note");
+    roll.refresh(true);
+    expect(roll.viewport()->rect().contains(roll.noteViewportRect(1).toAlignedRect()),
+        "opening a distant selected note brings its time and pitch into view");
+    expect(editor.notes().size() == 2 && editor.notes()[1].start_seconds == 90 && !editor.canUndo(),
+        "focusing a selected note preserves the entire canonical arrangement");
+}
+
 } // namespace
+
+void testPianoKeyAudition() {
+    hum::core::NoteEditor editor;
+    expect(editor.replaceAll({note(60,0,.5), note(61,1,.5)}), "key audition fixture loads");
+    hum::app::PianoRollWidget roll(editor);
+    roll.resize(900,420); roll.show(); roll.refresh(true); settle();
+    std::vector<std::uint8_t> heard;
+    roll.setAuditionCallback([&](std::uint8_t pitch) { heard.push_back(pitch); });
+    for (std::size_t i = 0; i < 2; ++i) {
+        QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier,
+            QPoint(20, static_cast<int>(roll.noteViewportRect(i).center().y())));
+    }
+    expect(heard == std::vector<std::uint8_t>{60,61}, "white and black piano keys audition exact pitches");
+    expect(editor.notes().size() == 2 && !editor.canUndo(), "piano audition does not edit canonical notes");
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(20,5));
+    expect(heard.size() == 2, "ruler corner does not audition a key");
+    roll.setVerticalZoom(30);
+    roll.refresh(true); settle();
+    QTest::mouseClick(roll.viewport(), Qt::LeftButton, Qt::NoModifier,
+        QPoint(20, static_cast<int>(roll.noteViewportRect(0).center().y())));
+    expect(heard.back() == 60, "piano audition follows pitch zoom and scroll");
+}
 
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    testPianoKeyAudition();
+    testSelectionDoesNotEditTiming();
+    testFocusSelectedNote();
+    testEditingToolsAndGroupGestures();
     testEmptyAddUndoRedoAndPainting();
     testSelectionZoomAndGestureCommit();
     testOptionalSnapAndDensePaintResponsiveness();

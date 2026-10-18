@@ -111,9 +111,45 @@ void testOverlapIsBounded() {
         "render rejects an otherwise valid phrase above the PCM allocation bound");
 }
 
+void testMuteAndMetronome() {
+    using namespace hum::core;
+    SimpleSynthConfig config;
+    config.sample_rate_hz = 8'000;
+    config.channel_count = 1;
+    config.release_seconds = 0;
+    const std::vector<TimedMidiNote> notes{{69, 100, 0, 1.5, 0, true}};
+    const auto muted = SimpleSynthRenderer{}.render(notes, config);
+    expect(muted && std::all_of(muted->interleaved_samples.begin(), muted->interleaved_samples.end(),
+        [](float sample) { return sample == 0; }), "muted notes render silence without changing duration");
+    config.metronome_enabled = true;
+    config.tempo_bpm = 120;
+    const auto click = SimpleSynthRenderer{}.render({}, config);
+    expect(click && click->frameCount() == 16'000 && click->phrase_duration_seconds == 2,
+        "empty metronome renders exactly one 4/4 bar for looping");
+    if (click) {
+        for (const auto start : {0, 4000, 8000, 12000}) {
+            expect(std::any_of(click->interleaved_samples.begin() + start,
+                click->interleaved_samples.begin() + start + 200,
+                [](float sample) { return std::abs(sample) > .001F; }), "each beat contains a click");
+            expect(std::all_of(click->interleaved_samples.begin() + start + 200,
+                click->interleaved_samples.begin() + start + 4000,
+                [](float sample) { return std::abs(sample) < 1e-7F; }), "space between clicks is silent");
+        }
+    }
+    config.tempo_bpm = 60;
+    const auto slower = SimpleSynthRenderer{}.render({}, config);
+    expect(slower && slower->frameCount() == 32'000, "metronome spacing follows tempo");
+    const auto mixed = SimpleSynthRenderer{}.render(notes, config);
+    expect(mixed && mixed->phrase_duration_seconds == 1.5,
+        "metronome tempo never retimes canonical note boundaries");
+    config.tempo_bpm = 0;
+    expect(!SimpleSynthRenderer{}.render(notes, config), "invalid metronome tempo is rejected");
+}
+
 } // namespace
 
 int main() {
+    testMuteAndMetronome();
     testSampleClockSchedulingAndRelease();
     testA4FrequencyAndBounds();
     testOverlapIsBounded();

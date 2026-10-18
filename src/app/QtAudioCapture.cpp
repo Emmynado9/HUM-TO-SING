@@ -1,4 +1,7 @@
 #include "QtAudioCapture.hpp"
+#ifdef Q_OS_MACOS
+#include "MacAudioInput.hpp"
+#endif
 
 #include <QAudioFormat>
 #include <QAudioSource>
@@ -6,6 +9,7 @@
 #include <QIODevice>
 #include <QPermission>
 #include <QPermissions>
+#include <QTimer>
 
 #include <algorithm>
 #include <array>
@@ -126,6 +130,21 @@ private:
 QtAudioCapture::QtAudioCapture(QObject* parent)
     : QObject(parent),
       media_devices_(this) {
+#ifdef Q_OS_MACOS
+    native_input_ = std::make_unique<MacAudioInput>();
+    auto* device_monitor = new QTimer(this);
+    connect(device_monitor, &QTimer::timeout, this, [this, previous = std::string{}]() mutable {
+        std::string current;
+        for (const auto& device : devices()) {
+            current += device.id + device.name + (device.is_default ? "1\n" : "0\n");
+        }
+        if (current != previous) {
+            previous = std::move(current);
+            handleDevicesChanged();
+        }
+    });
+    device_monitor->start(1000);
+#endif
     connect(&media_devices_, &QMediaDevices::audioInputsChanged, this, [this] {
         handleDevicesChanged();
     });
@@ -136,6 +155,9 @@ QtAudioCapture::~QtAudioCapture() {
 }
 
 std::vector<core::AudioInputDevice> QtAudioCapture::devices() const {
+#ifdef Q_OS_MACOS
+    return native_input_->devices();
+#else
     std::vector<core::AudioInputDevice> result;
     const auto inputs = QMediaDevices::audioInputs();
     result.reserve(static_cast<std::size_t>(inputs.size()));
@@ -143,6 +165,7 @@ std::vector<core::AudioInputDevice> QtAudioCapture::devices() const {
         result.push_back({stableId(device), device.description().toStdString(), device.isDefault()});
     }
     return result;
+#endif
 }
 
 core::PermissionStatus QtAudioCapture::permissionStatus() const {
@@ -176,6 +199,9 @@ void QtAudioCapture::requestPermission(core::PermissionCallback callback) {
 
 std::optional<core::AudioFormat> QtAudioCapture::preferredFormat(
     const std::string& device_id) const {
+#ifdef Q_OS_MACOS
+    return native_input_->preferredFormat(device_id);
+#else
     const auto device = findDevice(device_id);
     if (!device) {
         return std::nullopt;
@@ -189,6 +215,7 @@ std::optional<core::AudioFormat> QtAudioCapture::preferredFormat(
         static_cast<std::uint32_t>(format.sampleRate()),
         static_cast<std::uint16_t>(format.channelCount()),
     };
+#endif
 }
 
 core::ServiceStatus QtAudioCapture::start(
@@ -205,6 +232,11 @@ core::ServiceStatus QtAudioCapture::start(
             : core::ServiceStatus::permission_required;
     }
 
+#ifdef Q_OS_MACOS
+    active_device_id_ = device_id;
+    failure_callback_ = failure_callback;
+    return native_input_->start(device_id, format, std::move(audio_callback), std::move(failure_callback));
+#else
     const auto device = findDevice(device_id);
     if (!device) {
         return core::ServiceStatus::unavailable;
@@ -245,9 +277,13 @@ core::ServiceStatus QtAudioCapture::start(
         return core::ServiceStatus::io_error;
     }
     return core::ServiceStatus::ok;
+#endif
 }
 
 void QtAudioCapture::stop() noexcept {
+#ifdef Q_OS_MACOS
+    native_input_->stop();
+#endif
     stopping_ = true;
     if (audio_source_) {
         audio_source_->stop();
@@ -263,7 +299,11 @@ void QtAudioCapture::stop() noexcept {
 }
 
 bool QtAudioCapture::isCapturing() const noexcept {
+#ifdef Q_OS_MACOS
+    return native_input_->isCapturing();
+#else
     return audio_source_ != nullptr;
+#endif
 }
 
 void QtAudioCapture::setDevicesChangedCallback(std::function<void()> callback) {
@@ -286,7 +326,7 @@ std::string QtAudioCapture::stableId(const QAudioDevice& device) {
 }
 
 void QtAudioCapture::handleDevicesChanged() {
-    if (!active_device_id_.empty() && !findDevice(active_device_id_) && failure_callback_) {
+    if (!active_device_id_.empty() && !preferredFormat(active_device_id_) && failure_callback_) {
         failure_callback_(core::ServiceStatus::device_disconnected);
     }
     if (devices_changed_callback_) {

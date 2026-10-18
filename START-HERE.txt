@@ -1,0 +1,21 @@
+HUM TO MIDI — INTEL MAC / macOS 13 VENTURA BUILD KIT
+
+This is source code plus a builder, NOT a precompiled Mac app.
+
+1. Extract this ZIP and keep its folder together.
+2. Install Apple's free Command Line Tools if needed:
+   Open Terminal, enter xcode-select --install, and finish the installer.
+3. Ensure python3 --version is 3.9 or newer.
+4. Double-click Build-Intel-Mac.command.
+   Or run bash scripts/build-intel-mac.sh from this folder in Terminal.
+5. After the build, all tests, Qt deployment and signing succeed, open:
+   build/macos-intel/packages/HumToSing.app
+
+Read docs/mac-intel-build.md for help and how to try a melody.
+The builder downloads free tools/Qt during setup. No paid API is used.
+The application processes audio locally; recordings are never uploaded.
+
+The Intel Mac build and 20 automated test suites passed on 2026-10-18.
+Native loop playback controls, packaged startup and local signing were verified.
+Live microphone capture, human humming accuracy and subjective sound quality
+still need a manual trial. See docs/continuation-2026-10-18.md.

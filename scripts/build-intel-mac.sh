@@ -52,7 +52,8 @@ else
     qt_prefix="$tools_dir/qt/$qt_version/macos"
     if [[ ! -x "$qt_prefix/bin/macdeployqt" || ! -d "$qt_prefix/lib/cmake/Qt6Multimedia" ]]; then
         "$python" -m aqt install-qt mac desktop "$qt_version" clang_64 \
-            --outputdir "$tools_dir/qt" --modules qtmultimedia
+            --outputdir "$tools_dir/qt" --modules qtmultimedia \
+            --archives qtbase qtsvg qttools qttranslations
     fi
 fi
 [[ -x "$qt_prefix/bin/macdeployqt" ]] || fail "macdeployqt is missing at $qt_prefix/bin. Set HUM_QT_PREFIX to the root of a complete Qt 6.8.2 macOS installation."
@@ -96,7 +97,7 @@ for directory,_,files in os.walk(bundle):
         if 'Mach-O' not in kind: continue
         subprocess.run(['/usr/bin/lipo',path,'-verify_arch','x86_64'],check=True)
         linked=subprocess.check_output(['/usr/bin/otool','-L',path],text=True)
-        rpaths=subprocess.check_output(['/usr/bin/otool','-l',path],text=True)
+        rpaths='\n'.join(subprocess.check_output(['/usr/bin/otool','-l',path],text=True).splitlines()[1:])
         # The first otool -L line names this binary itself, not a dependency.
         if any(root in '\n'.join(linked.splitlines()[1:]) or root in rpaths
                for root in (qt_prefix,build_dir)):
@@ -113,7 +114,7 @@ mkdir -p "$staged_app/Contents/Resources/Documentation"
 # Exercise the deployed app without developer Qt environment variables.
 (
     unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH
-    QT_QPA_PLATFORM=offscreen "$staged_app/Contents/MacOS/HumToSing" --smoke-test
+    QT_QPA_PLATFORM=cocoa "$staged_app/Contents/MacOS/HumToSing" --smoke-test
 )
 
 archive="$build_dir/packages/HumToSing-0.1.0-macOS13-Intel.zip"

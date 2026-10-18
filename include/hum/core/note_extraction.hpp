@@ -16,12 +16,14 @@ namespace hum::core {
 
 struct NoteExtractionConfig {
     double minimum_note_duration_seconds{0.080};
-    double maximum_unreliable_gap_seconds{0.035};
-    double transition_hysteresis_cents{65.0};
+    double maximum_unreliable_gap_seconds{0.080};
+    double transition_hysteresis_cents{75.0};
     std::size_t onset_confirmation_frames{2};
     std::size_t transition_confirmation_frames{2};
     std::uint8_t fixed_velocity{96};
     std::uint8_t midi_channel{0};
+    double transition_confirmation_seconds{0.090};
+    double octave_confirmation_seconds{0.180};
 
     [[nodiscard]] bool isValid() const noexcept;
 };

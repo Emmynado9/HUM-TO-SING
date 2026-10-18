@@ -227,9 +227,55 @@ void testDenseDocumentResponsiveness() {
     expect(elapsed < 1'000.0, "dense core edit completes within one second in Debug");
 }
 
+void testGroupEditsMuteAndSlice() {
+    using namespace hum::core;
+    NoteEditor editor;
+    expect(editor.replaceAll({{61, 96, .25, 1, 2}, {67, 80, .5, 1, 3}, {72, 90, 2, .5, 0}},
+        {{{0, 2}, 0, "First"}, {{1}, 1, "Second"}}, 2), "multi-region fixture loads");
+    expect(editor.selectMany({1, 0, 1}) && editor.selectedIndices() == std::vector<std::size_t>({0, 1}),
+        "multi-selection sorts and deduplicates");
+    expect(!editor.selectMany({99}) && editor.selectedIndices().size() == 2,
+        "invalid selection preserves the prior selection");
+    editor.setMagnetEnabled(true);
+    expect(editor.moveSelected(-1, 0) == NoteEditResult::invalid_note && editor.notes()[0].start_seconds == .25
+        && editor.notes()[1].start_seconds == .5 && !editor.canUndo(), "invalid group move is atomic");
+    expect(editor.moveSelected(.25, 0) == NoteEditResult::applied && editor.undoLabel() == "Move notes",
+        "group move is one history operation");
+    expect(editor.notes()[0].pitch == 61 && editor.projectedNotes()[0].pitch == 60,
+        "group time move retains canonical Magnet pitches");
+    expect(editor.undo() && !editor.canUndo() && editor.selectedIndices().size() == 2,
+        "group undo restores notes and selection together");
+    expect(editor.toggleMuteSelected() == NoteEditResult::applied && editor.notes()[0].muted
+        && editor.notes()[1].muted && !editor.notes()[2].muted, "mute affects only selected notes");
+    const auto midi = MidiTimeline::fromTimedNotes(editor.projectedNotes());
+    expect(midi && midi->notes.size() == 1 && midi->notes.front().pitch == 72,
+        "muted projected notes are absent from MIDI export");
+    expect(editor.splitSelected(.75) == NoteEditResult::applied && editor.notes().size() == 5,
+        "slice splits all selected notes crossing the time");
+    expect(editor.notes()[3].muted && editor.notes()[3].channel == 2 && editor.notes()[3].pitch == 61
+        && editor.notes()[3].start_seconds == .75 && editor.notes()[3].duration_seconds == .5,
+        "slice preserves canonical pitch, channel, mute state and original end");
+    expect(editor.regions()[0].note_indices == std::vector<std::size_t>({0, 2, 3})
+        && editor.regions()[1].note_indices == std::vector<std::size_t>({1, 4}),
+        "slice keeps both halves in their original regions");
+    expect(editor.undo() && editor.notes().size() == 3 && editor.notes()[0].duration_seconds == 1,
+        "slice undoes in one step");
+    expect(editor.deleteSelected() == NoteEditResult::applied && editor.notes().size() == 1
+        && editor.regions().size() == 1 && editor.regions()[0].note_indices == std::vector<std::size_t>({0}),
+        "group deletion remaps membership and removes empty regions");
+    expect(editor.undo() && editor.selectedIndices() == std::vector<std::size_t>({0, 1}),
+        "undo deletion restores the full selection");
+    expect(editor.deleteRegion(0) == NoteEditResult::applied && editor.notes().size() == 1,
+        "region deletion after multi-selection remains valid");
+    for (const auto index : editor.selectedIndices()) {
+        expect(index < editor.notes().size(), "region deletion leaves no stale selected indices");
+    }
+}
+
 } // namespace
 
 int main() {
+    testGroupEditsMuteAndSlice();
     testCoordinateRoundTrips();
     testSelectionAddDeleteAndHistory();
     testMoveResizeBoundariesAndSingleGestureHistory();

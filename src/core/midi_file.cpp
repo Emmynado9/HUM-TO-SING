@@ -4,6 +4,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace hum::core {
@@ -18,6 +19,7 @@ struct MidiEvent {
     std::uint8_t pitch{0};
     std::uint8_t velocity{0};
     std::uint8_t channel{0};
+    std::optional<std::uint8_t> program;
 };
 
 void appendU16(std::vector<std::uint8_t>& bytes, const std::uint16_t value) {
@@ -82,9 +84,16 @@ std::optional<std::vector<std::uint8_t>> StandardMidiFileExporter::serialize(
                 note.channel,
             });
         }
+        for (const auto& change : sequence.program_changes) {
+            if (change.channel > 15 || change.program > 127) { return std::nullopt; }
+            events.push_back({0, false, 0, 0, change.channel, change.program});
+        }
         std::stable_sort(events.begin(), events.end(), [](const MidiEvent& left, const MidiEvent& right) {
             if (left.tick != right.tick) {
                 return left.tick < right.tick;
+            }
+            if (left.program.has_value() != right.program.has_value()) {
+                return left.program.has_value();
             }
             if (left.note_on != right.note_on) {
                 return !left.note_on;
@@ -109,10 +118,15 @@ std::optional<std::vector<std::uint8_t>> StandardMidiFileExporter::serialize(
             if (!appendVariableLength(track, delta)) {
                 return std::nullopt;
             }
-            track.push_back(static_cast<std::uint8_t>(
-                (event.note_on ? 0x90U : 0x80U) | event.channel));
-            track.push_back(event.pitch);
-            track.push_back(event.velocity);
+            if (event.program) {
+                track.push_back(static_cast<std::uint8_t>(0xc0U | event.channel));
+                track.push_back(*event.program);
+            } else {
+                track.push_back(static_cast<std::uint8_t>(
+                    (event.note_on ? 0x90U : 0x80U) | event.channel));
+                track.push_back(event.pitch);
+                track.push_back(event.velocity);
+            }
             previous_tick = event.tick;
         }
         static_cast<void>(appendVariableLength(track, 0));

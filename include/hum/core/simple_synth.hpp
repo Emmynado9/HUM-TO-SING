@@ -2,6 +2,7 @@
 
 #include "hum/core/audio.hpp"
 #include "hum/core/midi.hpp"
+#include "hum/core/note_editor.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -19,6 +20,9 @@ struct SimpleSynthConfig {
     double release_seconds{0.030};
     double maximum_render_seconds{600.0};
     std::size_t maximum_interleaved_samples{16U * 1024U * 1024U};
+    bool metronome_enabled{false};
+    double tempo_bpm{kDefaultTempoBpm};
+    std::vector<InstrumentVoice> note_voices;
 
     [[nodiscard]] bool isValid() const noexcept;
 };
@@ -40,5 +44,6 @@ public:
 };
 
 [[nodiscard]] double midiPitchFrequency(std::uint8_t pitch, double a4_hz = 440.0) noexcept;
+[[nodiscard]] float metronomeSample(double seconds, double tempo_bpm) noexcept;
 
 } // namespace hum::core

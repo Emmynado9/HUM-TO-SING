@@ -11,11 +11,35 @@ The Playlist is the main workspace. It uses the existing black, white, light-gra
 5. Double-click a region or choose **Piano roll** to correct notes. This screen shows the arrangement's canonical note events at their absolute times. Editing does not rerun transcription. Adding a note puts it in the selected note's region, or in the last region when no note is selected; an empty project creates its first region automatically.
 6. Use the existing key/scale, Magnet, tempo, rhythm-snap and zoom controls in the piano-roll window. Ctrl+wheel also zooms the Playlist; Shift+wheel scrolls time and ordinary wheel scrolls lanes. The 4/4 bar ruler is a guide. Tempo changes never stretch the arrangement. Rhythm snapping is explicitly optional and defaults OFF; an enabled snap rounds the region's first-note onset, preserving internal timing. Magnet affects derived pitch only.
 7. **Play melody** auditions the entire arrangement with the existing built-in soft tone; **Export MIDI** exports those same projected pitches and arranged times. The playhead still follows the audio output clock. Each lane uses the same instrument; independent instruments, mute/solo, mixing and per-track MIDI routing are not implemented. MIDI remains format 0 with one merged track, retaining canonical note channels. Lanes and region boundaries are retained by `.humproj`, not by this MIDI export.
-8. **Save project** stores canonical notes, region membership, lane placement/count and existing musical settings. Version 2 project files remain local and use atomic safe writes. Version 1 files load as one region on Track 1; they are not modified until explicitly saved.
+8. **Save project** stores canonical notes, region membership, lane placement/count and existing musical settings. Version 3 project files remain local and use atomic safe writes. Version 1 files load as one region on Track 1; version 2 files keep their lane arrangement. Neither is modified until explicitly saved.
 
 Original microphone audio and raw pitch frames remain session-only for the most recent take. New recording replaces that audio, while previously converted regions remain as notes. No recording is embedded in a project or uploaded. Existing bounded synthesis/rendering limits still apply to long arrangements; multiple lanes do not remove those resource bounds.
 
 Overlaps between regions and notes are preserved as independent events. Already-authored overlapping MIDI notes can be arranged together; this does not add chord recognition or polyphonic vocal transcription. The user's 2026-10-14 request explicitly authorizes multiple arrangement lanes; other deferred roadmap features remain deferred.
+
+## Editing tools and transport — 2026-10-17
+
+The piano-roll icon toolbar exposes Paint, Select / move, Resize, Erase, Mute, Slice, Zoom and Snap immediately above the grid. The selected tool stays highlighted. Snap is a separate toggle for rhythm timing; the Magnet control still governs pitch. Drag empty space to select several notes; Shift-click adds or removes a note from the selection, and Cmd/Ctrl+A selects all. Drag any selected note to move the group with one undo operation. Group movement stops at time zero and MIDI pitch limits. Escape cancels a move preview. Paint creates a note on click (one selected grid interval long when snap is enabled). Resize works from the note body. Mute toggles the selection; Slice divides selected notes crossing the clicked time and retains each half in its original region. Zoom clicks magnify time; Alt-click zooms out.
+
+**Play** starts from the ruler cursor, **Pause** holds the audio position, **Resume** continues, and **Stop / return to start** resets to zero. Click the Playlist ruler to set the start position or seek during playback/pause. The displayed playback position uses the audio output clock. Edits, tempo changes, and changes to Magnet, key or metronome stop playback before the next render.
+
+Enable **Metronome** to add a locally synthesized 4/4 click. With an empty project, Play runs a repeating click; Stop ends it. In **Hum → MIDI**, switch **Metronome ON** and set BPM before Record to hear the click while humming. Its beat indicator follows the audio clock, and the click stops with recording, including the duration limit or a capture failure. Use headphones to keep the click out of the microphone. Metronome clicks are not part of MIDI export. Muted notes remain editable and saved, and are silent in both instrument playback and MIDI export.
+
+Rhythm snap defaults OFF. Musical intervals from 1/4 through 1/64 notes follow project tempo for subsequent edits; changing tempo never moves existing notes. Loaded fixed-second intervals from older projects remain fixed. Schema 3 saves mute state, metronome and grid settings alongside the existing canonical notes and arrangement.
+
+Latest loop and transport verification is recorded in [Mac continuation results for October 18](continuation-2026-10-18.md). Earlier playback and toolbar verification is recorded in [audio and toolbar repair results](audio-toolbar-fix-2026-10-17.md). Earlier results are in [Mac continuation results](continuation-2026-10-17.md). The historical cloud results below predate these tools.
+
+## Loop selection and transport — 2026-10-18
+
+The Playlist transport sits before **+ Track**; the piano-roll transport sits to the right of its editing tools. Both operate the same arrangement. Hover over an icon for its action. Play becomes **Continue playback** while paused; Space toggles playback/pause.
+
+Choose **Select loop area**, then drag horizontally across either grid or ruler. The range follows the current rhythm-snap setting, accepts either drag direction, and appears in both views. Releasing a valid selection enables looping and returns to the editing tool. Press **Play** to hear the selected time range. Escape cancels a pending selection without changing the previous range.
+
+The **Loop** toggle disables or re-enables repetition while retaining an explicitly selected area. **Loop all** clears that area and repeats from time zero to the last note's end. With an empty project and the metronome enabled, Loop all covers one four-beat bar. Changing the range or loop mode stops playback; press Play again. Pause/Continue retains the position inside the range. Playlist ruler seeking during a loop wraps the requested position into the active range.
+
+Loop selection is session-only playback state: it does not edit canonical notes, create undo entries, trim MIDI export, or persist in project files. Opening a project clears it. Loop playback repeats the rendered audio within the selected boundaries, with a short edge fade; notes crossing a boundary are heard as the selected portion of that render.
+
+The existing local YIN conversion now holds sustained notes through short dropouts, vibrato and brief octave errors. Confirmed pitch changes retain their first supporting transition time. See [segmentation defaults and limits](note-extraction.md) and [continuation verification](continuation-2026-10-18.md). Human-voice accuracy still requires a live humming trial.
 
 ## Detector choice
 

@@ -33,6 +33,12 @@ int main(int argc, char** argv) {
     playlist.setHorizontalZoom(100.0);
     playlist.show();
     QApplication::processEvents();
+    double sought = -1;
+    playlist.setSeekCallback([&](double seconds) { sought = seconds; });
+    QTest::mouseClick(playlist.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(390, 10));
+    expect(near(sought, 2.0) && playlist.playheadViewportX() && near(*playlist.playheadViewportX(), 390),
+        "ruler click seeks at the displayed time without editing notes");
+    expect(!editor.canUndo(), "ruler seeking creates no note edit");
     expect(playlist.regionViewportRect().isEmpty(), "empty playlist invents no region");
     expect(!playlist.viewport()->grab().isNull(), "empty playlist paints offscreen");
 
@@ -147,6 +153,41 @@ int main(int argc, char** argv) {
     QTest::keyClick(&playlist, Qt::Key_Escape);
     QTest::mouseRelease(playlist.viewport(), Qt::LeftButton, Qt::NoModifier, escape_start + QPoint(30, 0));
     expect(editor.notes()[0].start_seconds == 1.25, "Escape cancels a region drag");
+
+    expect(editor.replaceAll({{61, 96, .53, .61, 0}, {67, 90, 2.13, .4, 0}},
+        {{{0}, 0, "First"}, {{1}, 1, "Second"}}, 2), "off-grid selection fixture loads");
+    playlist.refresh();
+    playlist.setRhythmSnap({true, .25});
+    playlist.horizontalScrollBar()->setValue(0);
+    playlist.verticalScrollBar()->setValue(0);
+    document_changes = 0;
+    const auto original_notes = editor.notes();
+    const auto timing_unchanged = [&] {
+        return editor.notes()[0].start_seconds == original_notes[0].start_seconds
+            && editor.notes()[1].start_seconds == original_notes[1].start_seconds
+            && editor.notes()[0].duration_seconds == original_notes[0].duration_seconds
+            && editor.notes()[1].duration_seconds == original_notes[1].duration_seconds;
+    };
+    const auto click_start = playlist.regionViewportRect(0).center().toPoint();
+    for (const int jitter : {0, 1}) {
+        QTest::mousePress(playlist.viewport(), Qt::LeftButton, Qt::NoModifier, click_start);
+        QTest::mouseRelease(playlist.viewport(), Qt::LeftButton, Qt::NoModifier, click_start + QPoint(jitter, 0));
+        expect(timing_unchanged() && !editor.canUndo() && document_changes == 0,
+            "selecting an off-grid region with Snap preserves notes and history even with small pointer jitter");
+        expect(playlist.selectedRegion() == 0, "timing-preserving click selects the region");
+        if (editor.canUndo()) { static_cast<void>(editor.undo()); playlist.refresh(); document_changes = 0; }
+    }
+    expect(editor.select(0), "keyboard navigation starts with a note from another region");
+    QTest::mouseClick(playlist.viewport(), Qt::LeftButton, Qt::NoModifier,
+        playlist.regionViewportRect(1).center().toPoint());
+    editor_requests = 0;
+    bool selected_before_open = false;
+    playlist.setOpenEditorCallback([&] { ++editor_requests; selected_before_open = editor.selectedIndex() == 1; });
+    QTest::keyClick(&playlist, Qt::Key_Return);
+    expect(editor_requests == 1 && selected_before_open && playlist.selectedTrack() == 1,
+        "Enter selects the chosen region's canonical note before opening the editor");
+    expect(timing_unchanged() && !editor.canUndo(),
+        "opening an off-grid region leaves canonical timing and history untouched");
 
     if (failures) {
         std::cerr << failures << " playlist assertion(s) failed.\n";

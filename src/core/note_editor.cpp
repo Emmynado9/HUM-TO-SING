@@ -19,7 +19,7 @@ namespace {
         && left.velocity == right.velocity
         && left.start_seconds == right.start_seconds
         && left.duration_seconds == right.duration_seconds
-        && left.channel == right.channel;
+        && left.channel == right.channel && left.muted == right.muted;
 }
 
 [[nodiscard]] bool allValid(const std::vector<TimedMidiNote>& notes) noexcept {
@@ -29,6 +29,37 @@ namespace {
 }
 
 } // namespace
+
+bool validTrackDefinition(const TrackDefinition& track) noexcept {
+    return (track.kind == TrackKind::melody || track.kind == TrackKind::chords)
+        && track.instrument <= InstrumentVoice::strings;
+}
+
+const char* trackKindName(const TrackKind kind) noexcept {
+    return kind == TrackKind::chords ? "Chords" : "Melody";
+}
+
+const char* instrumentVoiceName(const InstrumentVoice instrument) noexcept {
+    switch (instrument) {
+    case InstrumentVoice::grand_piano: return "Grand Piano";
+    case InstrumentVoice::electric_piano: return "Electric Piano";
+    case InstrumentVoice::acoustic_guitar: return "Acoustic Guitar";
+    case InstrumentVoice::electric_guitar: return "Electric Guitar";
+    case InstrumentVoice::strings: return "Strings";
+    }
+    return "Grand Piano";
+}
+
+std::uint8_t instrumentVoiceMidiProgram(const InstrumentVoice instrument) noexcept {
+    switch (instrument) {
+    case InstrumentVoice::grand_piano: return 0;
+    case InstrumentVoice::electric_piano: return 4;
+    case InstrumentVoice::acoustic_guitar: return 24;
+    case InstrumentVoice::electric_guitar: return 27;
+    case InstrumentVoice::strings: return 48;
+    }
+    return 0;
+}
 
 bool RhythmSnap::isValid() const noexcept {
     return std::isfinite(interval_seconds) && interval_seconds > 0.0;
@@ -107,7 +138,8 @@ bool validPlaylistRegions(const std::vector<PlaylistRegion>& regions,
 }
 
 bool NoteEditor::replaceAll(std::vector<TimedMidiNote> notes,
-    std::vector<PlaylistRegion> regions, const std::size_t track_count) {
+    std::vector<PlaylistRegion> regions, const std::size_t track_count,
+    std::vector<TrackDefinition> tracks) {
     if (!allValid(notes)) {
         return false;
     }
@@ -121,10 +153,16 @@ bool NoteEditor::replaceAll(std::vector<TimedMidiNote> notes,
     if (!validPlaylistRegions(regions, notes.size(), track_count)) {
         return false;
     }
+    if (tracks.empty()) { tracks.assign(track_count, {}); }
+    if (tracks.size() != track_count || !std::all_of(tracks.begin(), tracks.end(), validTrackDefinition)) {
+        return false;
+    }
     state_.notes = std::move(notes);
     state_.regions = std::move(regions);
     state_.track_count = track_count;
+    state_.tracks = std::move(tracks);
     state_.selected_index.reset();
+    state_.selected_indices.clear();
     clearHistory();
     refreshProjection();
     return true;
@@ -132,11 +170,21 @@ bool NoteEditor::replaceAll(std::vector<TimedMidiNote> notes,
 
 const std::vector<PlaylistRegion>& NoteEditor::regions() const noexcept { return state_.regions; }
 std::size_t NoteEditor::trackCount() const noexcept { return state_.track_count; }
+const std::vector<TrackDefinition>& NoteEditor::tracks() const noexcept { return state_.tracks; }
 
-NoteEditResult NoteEditor::addTrack() {
-    if (state_.track_count >= 16) { return NoteEditResult::invalid_index; }
+NoteEditResult NoteEditor::setTrackInstrument(const std::size_t track, const InstrumentVoice instrument) {
+    if (track >= state_.tracks.size() || instrument > InstrumentVoice::strings) { return NoteEditResult::invalid_index; }
+    if (state_.tracks[track].instrument == instrument) { return NoteEditResult::no_change; }
+    auto next = state_;
+    next.tracks[track].instrument = instrument;
+    return commit(std::move(next), "Change track instrument");
+}
+
+NoteEditResult NoteEditor::addTrack(const TrackDefinition track) {
+    if (state_.track_count >= 16 || !validTrackDefinition(track)) { return NoteEditResult::invalid_index; }
     auto next = state_;
     ++next.track_count;
+    next.tracks.push_back(track);
     return commit(std::move(next), "Add track");
 }
 
@@ -151,7 +199,8 @@ NoteEditResult NoteEditor::appendRegion(std::vector<TimedMidiNote> notes,
     auto next = state_;
     PlaylistRegion region;
     region.track = track;
-    region.name = "Melody " + std::to_string(next.regions.size() + 1);
+    region.name = std::string(next.tracks[track].kind == TrackKind::chords ? "Chords " : "Melody ")
+        + std::to_string(next.regions.size() + 1);
     region.note_indices.resize(notes.size());
     std::iota(region.note_indices.begin(), region.note_indices.end(), next.notes.size());
     next.notes.insert(next.notes.end(), notes.begin(), notes.end());
@@ -247,7 +296,69 @@ bool NoteEditor::select(const std::optional<std::size_t> index) noexcept {
         return false;
     }
     state_.selected_index = index;
+    state_.selected_indices.clear();
     return true;
+}
+
+std::vector<std::size_t> NoteEditor::selectedIndices() const {
+    if (!state_.selected_indices.empty()) { return state_.selected_indices; }
+    return state_.selected_index ? std::vector<std::size_t>{*state_.selected_index} : std::vector<std::size_t>{};
+}
+
+bool NoteEditor::isSelected(const std::size_t index) const noexcept {
+    return state_.selected_index == index
+        || std::find(state_.selected_indices.begin(), state_.selected_indices.end(), index) != state_.selected_indices.end();
+}
+
+bool NoteEditor::selectMany(std::vector<std::size_t> indices) {
+    if (std::any_of(indices.begin(), indices.end(), [this](auto index) { return index >= state_.notes.size(); })) {
+        return false;
+    }
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    state_.selected_indices = std::move(indices);
+    state_.selected_index = state_.selected_indices.empty() ? std::nullopt
+        : std::optional<std::size_t>{state_.selected_indices.front()};
+    return true;
+}
+
+void NoteEditor::selectAll() {
+    std::vector<std::size_t> indices(state_.notes.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    static_cast<void>(selectMany(std::move(indices)));
+}
+
+NoteEditResult NoteEditor::toggleMuteSelected() {
+    if (!selectedNote()) { return NoteEditResult::no_selection; }
+    auto next = state_;
+    const auto muted = !selectedNote()->muted;
+    for (const auto index : selectedIndices()) { next.notes[index].muted = muted; }
+    return commit(std::move(next), muted ? "Mute notes" : "Unmute notes");
+}
+
+NoteEditResult NoteEditor::splitSelected(const double seconds) {
+    if (!std::isfinite(seconds)) { return NoteEditResult::invalid_note; }
+    if (!selectedNote()) { return NoteEditResult::no_selection; }
+    auto next = state_;
+    bool split = false;
+    for (const auto index : selectedIndices()) {
+        auto right = next.notes[index];
+        const auto end = right.start_seconds + right.duration_seconds;
+        if (seconds <= right.start_seconds + 0.001 || seconds >= end - 0.001) { continue; }
+        if (next.notes.size() >= 100'000) { return NoteEditResult::invalid_note; }
+        next.notes[index].duration_seconds = seconds - right.start_seconds;
+        right.start_seconds = seconds;
+        right.duration_seconds = end - seconds;
+        for (auto& region : next.regions) {
+            if (std::find(region.note_indices.begin(), region.note_indices.end(), index) != region.note_indices.end()) {
+                region.note_indices.push_back(next.notes.size());
+                break;
+            }
+        }
+        next.notes.push_back(right);
+        split = true;
+    }
+    return split ? commit(std::move(next), "Slice notes") : NoteEditResult::no_change;
 }
 
 NoteEditResult NoteEditor::add(TimedMidiNote note) {
@@ -269,6 +380,7 @@ NoteEditResult NoteEditor::add(TimedMidiNote note) {
     }
     region->note_indices.push_back(next.notes.size() - 1);
     next.selected_index = next.notes.size() - 1;
+    next.selected_indices.clear();
     return commit(std::move(next), "Add note");
 }
 
@@ -294,14 +406,14 @@ NoteEditResult NoteEditor::moveSelected(
     if (!selected) {
         return NoteEditResult::no_selection;
     }
-    const auto pitch = static_cast<int>(selected->pitch) + delta_pitch;
-    TimedMidiNote moved = *selected;
-    moved.start_seconds += delta_seconds;
-    if (pitch < 0 || pitch > 127) {
-        return NoteEditResult::invalid_note;
+    auto next = state_;
+    for (const auto index : selectedIndices()) {
+        const auto pitch = static_cast<int>(next.notes[index].pitch) + delta_pitch;
+        if (pitch < 0 || pitch > 127) { return NoteEditResult::invalid_note; }
+        next.notes[index].pitch = static_cast<std::uint8_t>(pitch);
+        next.notes[index].start_seconds += delta_seconds;
     }
-    moved.pitch = static_cast<std::uint8_t>(pitch);
-    return updateSelected(moved, "Move note");
+    return commit(std::move(next), selectedIndices().size() == 1 ? "Move note" : "Move notes");
 }
 
 NoteEditResult NoteEditor::resizeSelected(const double duration_seconds) {
@@ -314,6 +426,17 @@ NoteEditResult NoteEditor::resizeSelected(const double duration_seconds) {
     return updateSelected(resized, "Resize note");
 }
 
+NoteEditResult NoteEditor::quantizeSelected(const double interval_seconds) {
+    if (!state_.selected_index) { return NoteEditResult::no_selection; }
+    if (!std::isfinite(interval_seconds) || interval_seconds <= 0.0) { return NoteEditResult::invalid_note; }
+    auto next = state_;
+    for (const auto index : selectedIndices()) {
+        next.notes[index].start_seconds = std::max(0.0,
+            std::round(next.notes[index].start_seconds / interval_seconds) * interval_seconds);
+    }
+    return commit(std::move(next), selectedIndices().size() == 1 ? "Quantize note" : "Quantize notes");
+}
+
 NoteEditResult NoteEditor::deleteSelected() {
     if (!state_.selected_index) {
         return NoteEditResult::no_selection;
@@ -322,13 +445,19 @@ NoteEditResult NoteEditor::deleteSelected() {
         return NoteEditResult::invalid_index;
     }
     auto next = state_;
-    const auto deleted = *next.selected_index;
-    next.notes.erase(next.notes.begin() + static_cast<std::ptrdiff_t>(*next.selected_index));
+    std::vector<std::size_t> remapped(next.notes.size());
+    std::vector<TimedMidiNote> remaining;
+    for (std::size_t index = 0; index < next.notes.size(); ++index) {
+        remapped[index] = remaining.size();
+        if (!isSelected(index)) { remaining.push_back(next.notes[index]); }
+    }
+    next.notes = std::move(remaining);
     for (auto& region : next.regions) {
-        std::erase(region.note_indices, deleted);
-        for (auto& index : region.note_indices) { if (index > deleted) { --index; } }
+        std::erase_if(region.note_indices, [this](auto index) { return isSelected(index); });
+        for (auto& index : region.note_indices) { index = remapped[index]; }
     }
     std::erase_if(next.regions, [](const auto& region) { return region.note_indices.empty(); });
+    next.selected_indices.clear();
     if (next.notes.empty()) {
         next.selected_index.reset();
     } else if (*next.selected_index >= next.notes.size()) {
@@ -439,7 +568,12 @@ std::size_t NoteEditor::overlapCount() const noexcept {
 }
 
 NoteEditResult NoteEditor::commit(State next, std::string label) {
+    if (next.notes.size() != state_.notes.size() && label != "Slice notes") {
+        next.selected_indices.clear();
+    }
     if (!allValid(next.notes)
+        || next.tracks.size() != next.track_count
+        || !std::all_of(next.tracks.begin(), next.tracks.end(), validTrackDefinition)
         || !validPlaylistRegions(next.regions, next.notes.size(), next.track_count)) {
         return NoteEditResult::invalid_note;
     }
@@ -448,6 +582,7 @@ NoteEditResult NoteEditor::commit(State next, std::string label) {
     }
     if (state_.selected_index == next.selected_index
         && state_.regions == next.regions && state_.track_count == next.track_count
+        && state_.tracks == next.tracks
         && state_.notes.size() == next.notes.size()
         && std::equal(
             state_.notes.cbegin(), state_.notes.cend(), next.notes.cbegin(), notesEqual)) {

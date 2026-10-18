@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hum/core/note_editor.hpp"
+#include "hum/core/loop_range.hpp"
 
 #include <QAbstractScrollArea>
 #include <QRectF>
@@ -19,11 +20,20 @@ namespace hum::app {
 
 class PianoRollWidget final : public QAbstractScrollArea {
 public:
+    enum class Tool { select, paint, resize, erase, mute, slice, zoom };
     explicit PianoRollWidget(core::NoteEditor& editor, QWidget* parent = nullptr);
+    void setTool(Tool tool);
+    [[nodiscard]] Tool tool() const noexcept;
+    void setTempo(double bpm);
 
     void setDocumentChangedCallback(std::function<void()> callback);
     void setSelectionChangedCallback(std::function<void()> callback);
     void setStatusCallback(std::function<void(const QString&)> callback);
+    void setAuditionCallback(std::function<void(std::uint8_t)> callback);
+    void setLoopTool(bool enabled);
+    void setLoopRange(std::optional<core::LoopRange> range, bool enabled);
+    void setLoopChangedCallback(std::function<void(core::LoopRange)> callback);
+    [[nodiscard]] std::optional<core::LoopRange> loopRange() const { return loop_range_; }
 
     void setHorizontalZoom(double pixels_per_second);
     void setVerticalZoom(double pixels_per_semitone);
@@ -54,6 +64,11 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private:
+    double loopTime(double x) const;
+    bool loop_tool_{false}, loop_enabled_{false};
+    std::optional<double> loop_anchor_;
+    std::optional<core::LoopRange> loop_range_, loop_preview_;
+    std::function<void(core::LoopRange)> loop_changed_;
     enum class DragMode {
         none,
         move,
@@ -76,6 +91,7 @@ private:
     std::function<void()> document_changed_callback_;
     std::function<void()> selection_changed_callback_;
     std::function<void(const QString&)> status_callback_;
+    std::function<void(std::uint8_t)> audition_callback_;
     DragMode drag_mode_{DragMode::none};
     QPointF drag_origin_;
     core::TimedMidiNote drag_original_;
@@ -84,6 +100,11 @@ private:
     std::optional<std::uint8_t> drag_display_original_pitch_;
     std::optional<double> playhead_seconds_;
     bool initial_focus_pending_{true};
+    Tool tool_{Tool::select};
+    double tempo_bpm_{120.0};
+    std::optional<QRectF> marquee_;
+    std::vector<std::size_t> marquee_initial_;
+    std::optional<std::size_t> drag_index_;
 };
 
 } // namespace hum::app

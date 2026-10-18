@@ -12,7 +12,7 @@
 
 namespace hum::core {
 
-inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 2;
+inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 4;
 
 struct ProjectDocument {
     std::uint32_t schema_version{kCurrentProjectSchemaVersion};
@@ -21,9 +21,12 @@ struct ProjectDocument {
     std::uint8_t root_pitch_class{0};
     ScaleMode scale_mode{ScaleMode::major};
     bool magnet_enabled{false};
+    bool metronome_enabled{false};
+    unsigned grid_division{16};
     RhythmSnap rhythm_snap{};
     std::vector<TimedMidiNote> canonical_notes;
     std::size_t track_count{1};
+    std::vector<TrackDefinition> tracks;
     std::vector<PlaylistRegion> playlist_regions;
 
     [[nodiscard]] bool isValid() const noexcept;

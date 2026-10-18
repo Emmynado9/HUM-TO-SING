@@ -28,6 +28,7 @@ struct TimedMidiNote {
     double start_seconds{0.0};
     double duration_seconds{0.5};
     std::uint8_t channel{0};
+    bool muted{false};
 
     [[nodiscard]] bool isValid() const noexcept;
 };
@@ -36,6 +37,12 @@ struct MidiSequence {
     std::uint16_t ticks_per_quarter{kDefaultTicksPerQuarter};
     double tempo_bpm{kDefaultTempoBpm};
     std::vector<MidiNote> notes;
+    struct ProgramChange {
+        std::uint8_t channel{0};
+        std::uint8_t program{0};
+        bool operator==(const ProgramChange&) const = default;
+    };
+    std::vector<ProgramChange> program_changes;
 
     [[nodiscard]] bool isValid() const noexcept;
 };

@@ -204,6 +204,8 @@ void testGapHysteresisAndRepeatedNotes() {
     hum::core::NoteExtractionConfig config;
     config.minimum_note_duration_seconds = 0.025;
     config.maximum_unreliable_gap_seconds = 0.025;
+    // This fixture explicitly exercises the fast, frame-count configuration.
+    config.transition_confirmation_seconds = 0.020;
     hum::core::HysteresisNoteSegmenter segmenter;
 
     std::vector<hum::core::RawPitchEstimate> short_gap;

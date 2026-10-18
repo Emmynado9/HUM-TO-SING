@@ -1,6 +1,8 @@
 #pragma once
 
 #include "hum/core/midi.hpp"
+#include "hum/core/note_editor.hpp"
+#include "hum/core/loop_range.hpp"
 
 #include <QObject>
 #include <QString>
@@ -18,7 +20,13 @@ public:
     explicit QtMidiPlayback(QObject* parent = nullptr);
     ~QtMidiPlayback() override;
 
-    void play(std::vector<core::TimedMidiNote> notes, StatusCallback callback);
+    void play(std::vector<core::TimedMidiNote> notes, StatusCallback callback,
+        double start_seconds = 0.0, double tempo_bpm = 120.0, bool metronome = false,
+        std::vector<core::InstrumentVoice> voices = {}, std::optional<core::LoopRange> loop = std::nullopt);
+    void pause();
+    void resume();
+    void seek(double seconds);
+    [[nodiscard]] bool isPaused() const noexcept;
     void stop() noexcept;
     [[nodiscard]] bool isPlaying() const noexcept;
     [[nodiscard]] bool isPreparing() const noexcept;

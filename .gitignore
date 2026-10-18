@@ -5,3 +5,4 @@
 *.user
 *.swp
 .DS_Store
+/aqtinstall.log

@@ -4,13 +4,15 @@ This repository contains the tested foundation of a local-first desktop applicat
 
 **Hum → Edit → Play → Export**
 
+The Playlist now hosts multiple arrangement lanes with floating Hum → MIDI, Piano roll and Pitch Lab windows. The piano roll includes group selection, Paint, Resize, Erase, Mute, Slice and Zoom tools. Playback offers pause/resume, ruler seeking and an optional local metronome. Hum → MIDI also provides the click during recording, with BPM and beat display. The Playlist shows the speaker output and offers Test speakers. Select a loop area in either view or choose Loop all to repeat the arrangement. See [workspace controls](docs/playlist-workspace.md), [sampled instruments and progressions](docs/instruments-and-progressions.md), and [latest Mac verification](docs/continuation-2026-10-18.md).
+
 The app enumerates microphones, records one bounded vocal phrase, displays input level and source metadata, and plays the original recording for verification. During capture, the Pitch Lab estimates a single sung note and displays smoothed frequency, nearest note, cents deviation, and a periodicity-based voicing-quality measure. Unreliable input is labeled **No reliable pitch**.
 
 After Stop, a worker analyzes the saved phrase, retains the raw pitch/voicing frames, derives conservative monophonic note events, and places an editable copy on a piano roll. A user can select, add, delete, move, and resize note blocks, then undo or redo each edit. Time and pitch zoom and both scroll directions are available. Optional rhythm snapping is off by default, so captured seconds remain unchanged unless the user chooses a timing interval.
 
 The pitch guide covers all 12 root pitch classes with Major and Natural minor scales. Out-of-scale notes are muted, dashed, and labeled. **Magnet OFF** preserves canonical pitches. **Magnet ON** derives the nearest valid scale pitch for display and export without replacing the underlying pitch; switching it off reveals the canonical phrase again. Selecting a key does not transpose the melody, and rhythm snapping remains a separate time control.
 
-**Play melody** renders the current visible/export projection through a procedural soft-tone instrument and feeds it to the local audio output. Note boundaries are scheduled at output sample positions, while the UI timer only redraws the audio-clock playhead. Stop, restart, output-device changes, edits, key/Magnet changes, and app closure stop and destroy the playback sink. The instrument is repository-owned code and uses no soundfont, sample asset, model, API, or network resource. **Play original** remains a separate control for the captured voice.
+**Play** renders the current visible/export projection through a procedural soft-tone instrument and feeds it to the local audio output. Note boundaries are scheduled at output sample positions, while the UI timer only redraws the audio-clock playhead. Stop, restart, output-device changes, edits, key/Magnet changes, and app closure stop and destroy the playback sink. The instrument is repository-owned code and uses no soundfont, sample asset, model, API, or network resource. **Play original** remains a separate control for the captured voice.
 
 MIDI export reads the same projected notes heard by **Play melody** and writes a local Standard MIDI File format 0. The selectable project/export tempo maps preserved seconds to 480 ticks per quarter with nearest-tick resolution; it does not retime or rhythm-quantize notes. MIDI contains note and tempo instructions, not the original voice or built-in instrument audio.
 
@@ -91,7 +93,7 @@ The package dynamically links Debian's Qt runtime and declares those dependencie
 - Choose a root and Major or Natural minor to highlight the scale. This selection supplies guidance and does not transpose notes.
 - Toggle **Magnet ON** to show and export closest in-scale pitches. Toggle it off to return to canonical pitches. Equal-distance choices resolve downward; at MIDI 0, an unavailable lower candidate is skipped.
 - Hover over a block for its note name, MIDI number, onset, duration, and editing instructions.
-- Use **Play melody** for the built-in instrument and moving red playhead. Use **Play original** only to verify the captured voice.
+- Use **Play** for the built-in instrument and moving red playhead; Pause/Resume keeps the position and Stop returns to the start. Use **Play original** only to verify the captured voice.
 - Set **Export tempo** before saving/exporting. Tempo changes MIDI tick mapping and metadata; it does not quantize or stretch the melody.
 - **Save project** preserves editable notes and settings, but deliberately omits the session-only original audio.
 

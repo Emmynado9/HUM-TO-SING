@@ -1,14 +1,15 @@
 # Project files
 
-Hum-to-MIDI project files use the `.humproj` extension and schema version 2. Version 1 files remain readable as one phrase on Track 1 and are upgraded only when explicitly saved. They are local, UTF-8 text documents with a fixed field order. The application saves them with `QSaveFile`, which writes a sibling temporary file and commits it as the destination only after all bytes are written.
+Hum-to-MIDI project files use the `.humproj` extension and schema version 3. Version 1 files remain readable as one phrase on Track 1; version 2 retains its arrangement lanes and regions. Older files are upgraded only when explicitly saved. They are local, UTF-8 text documents with a fixed field order. The application saves them with `QSaveFile`, which writes a sibling temporary file and commits it as the destination only after all bytes are written.
 
 Stored data:
 
-- canonical editable notes: MIDI pitch, velocity, channel, start seconds, and duration seconds;
+- canonical editable notes: MIDI pitch, velocity, channel, start seconds, duration seconds, and a reversible mute flag;
 - tempo in BPM and 480 ticks per quarter by default;
 - selected root and Major or Natural minor mode;
 - Magnet ON/OFF;
-- optional rhythm-snap setting;
+- optional rhythm-snap setting and musical grid division (1/4 through 1/64 notes);
+- metronome ON/OFF;
 - arrangement lane count and phrase regions, with their names, lane placement and indices into the canonical note vector.
 
 The visible Magnet pitches are derived from canonical pitches after load and are not stored as a second melody. This prevents repeated key changes from compounding snap results.
@@ -23,6 +24,8 @@ Tempo maps seconds to MIDI ticks:
 ticks = round(seconds × tempo_bpm × ticks_per_quarter / 60)
 ```
 
-Changing tempo does not stretch notes or change playback timing. Rhythm snap remains a separate opt-in editing aid.
+Changing tempo does not stretch notes or change their playback timing. It changes the metronome and the interval used for subsequent edits on a musical grid. Rhythm snap remains a separate opt-in editing aid. Legacy fixed-second snap intervals remain fixed when tempo changes. Loaded MIDI tick resolution is retained by both project save and MIDI export.
+
+Muted notes retain their canonical pitch, timing and region membership, but produce no instrument audio or MIDI note events. Unmuting restores them. The metronome is a playback aid and is never exported as MIDI notes. Older projects load with unmuted notes and metronome OFF.
 
 See [Playlist and floating screens](playlist-workspace.md) for arrangement interactions, lane limits and merged MIDI export behavior.

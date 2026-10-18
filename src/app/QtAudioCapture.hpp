@@ -17,6 +17,8 @@ class QIODevice;
 
 namespace hum::app {
 
+class MacAudioInput;
+
 class QtAudioCapture final : public QObject, public core::IAudioCapture {
 public:
     explicit QtAudioCapture(QObject* parent = nullptr);
@@ -49,6 +51,9 @@ private:
     std::function<void()> devices_changed_callback_;
     std::string active_device_id_;
     bool stopping_{false};
+#ifdef Q_OS_MACOS
+    std::unique_ptr<MacAudioInput> native_input_;
+#endif
 };
 
 } // namespace hum::app

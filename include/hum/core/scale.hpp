@@ -1,4 +1,6 @@
 #pragma once
+#include <optional>
+#include <string>
 
 #include "hum/core/midi.hpp"
 
@@ -43,5 +45,13 @@ public:
     ScaleMode mode);
 [[nodiscard]] std::string_view scaleModeName(ScaleMode mode) noexcept;
 [[nodiscard]] std::string_view pitchClassName(std::uint8_t pitch_class) noexcept;
+// Turns each hummed scale degree into its root-position diatonic triad.
+[[nodiscard]] std::vector<TimedMidiNote> makeDiatonicTriads(
+    std::span<const TimedMidiNote> roots, const ScaleDefinition& scale, bool connect_roots = false);
+// Degrees are zero-based, independent of key. Numeral case does not override diatonic quality.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> parseChordDegrees(std::string_view text);
+[[nodiscard]] std::string chordDegreeName(const ScaleDefinition& scale, std::uint8_t degree);
+[[nodiscard]] std::vector<TimedMidiNote> makeChordProgression(
+    std::span<const std::uint8_t> degrees, const ScaleDefinition& scale, double seconds_per_chord);
 
 } // namespace hum::core
