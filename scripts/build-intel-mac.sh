@@ -60,6 +60,10 @@ fi
 [[ -d "$qt_prefix/lib/cmake/Qt6Multimedia" ]] || fail "The Qt Multimedia module is missing. Install it before retrying."
 [[ "$("$qt_prefix/bin/qmake" -query QT_VERSION)" == "$qt_version" ]] || fail "Use Qt $qt_version for this build kit."
 
+# Only build-time dependency preparation uses the network. The app has no
+# download path; this separate engine loads its bundled CPU runtime on demand.
+"$python" "$repo_root/scripts/prepare-neural-vocal.py"
+
 "$cmake" -S "$repo_root" -B "$build_dir" -G 'Unix Makefiles' \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHUM_BUILD_GUI=ON \
     -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
@@ -107,6 +111,11 @@ PY
 mkdir -p "$staged_app/Contents/Resources/Documentation"
 /usr/bin/ditto "$repo_root/docs/mac-intel-build.md" "$staged_app/Contents/Resources/Documentation/mac-intel-build.md"
 /usr/bin/ditto "$repo_root/docs/dependencies-and-licenses.md" "$staged_app/Contents/Resources/Documentation/dependencies-and-licenses.md"
+mkdir -p "$staged_app/Contents/Resources/Documentation/Vocal"
+for notice in "$repo_root"/resources/vocal/*.txt; do
+    /usr/bin/ditto "$notice" "$staged_app/Contents/Resources/Documentation/Vocal/$(basename "$notice")"
+done
+/usr/bin/ditto "$repo_root/docs/sing-to-midi.md" "$staged_app/Contents/Resources/Documentation/sing-to-midi.md"
 # Ad-hoc signing is free, local, and is not Apple Developer ID notarization.
 /usr/bin/codesign --force --deep --sign - "$staged_app"
 /usr/bin/codesign --verify --deep --strict "$staged_app"
@@ -115,6 +124,7 @@ mkdir -p "$staged_app/Contents/Resources/Documentation"
 (
     unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH
     QT_QPA_PLATFORM=cocoa "$staged_app/Contents/MacOS/HumToSing" --smoke-test
+    QT_QPA_PLATFORM=cocoa "$staged_app/Contents/MacOS/HumToSing" --vocal-backend-check
 )
 
 archive="$build_dir/packages/HumToSing-0.1.0-macOS13-Intel.zip"

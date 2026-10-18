@@ -5,6 +5,7 @@
 #include "AudioOutputFormat.hpp"
 #include "PianoRollWidget.hpp"
 #include "PlaylistWidget.hpp"
+#include "vocal/VocalModelAssets.hpp"
 #include <QTabWidget>
 #include <QCheckBox>
 #include <QMouseEvent>
@@ -98,6 +99,20 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QCoreApplication::setOrganizationName(QStringLiteral("Hum-to-MIDI Music Sketchpad"));
 
+    if (QCoreApplication::arguments().contains(QStringLiteral("--vocal-backend-check"))) {
+        hum::vocal::AudioBuffer tone{16'000, std::vector<float>(32'000)};
+        for (std::size_t i = 3'200; i < 28'800; ++i) {
+            const auto phase = 6.283185307179586 * 220 * static_cast<double>(i) / 16'000;
+            tone.samples[i] = static_cast<float>(.2 * std::sin(phase) + .08 * std::sin(2 * phase));
+        }
+        const auto result = hum::vocal::infer(tone, hum::app::vocal::bundledModel(),
+            hum::app::vocal::bundledRuntime(), {});
+        const auto passed = result.status == hum::vocal::Status::success
+            && result.notes.size() == 1 && result.notes.front().pitch == 57;
+        qInfo() << (passed ? "PASS" : "FAIL") << "bundled neural vocal backend" << QString::fromStdString(result.error);
+        return passed ? 0 : 46;
+    }
+
     if (QCoreApplication::arguments().contains(QStringLiteral("--audio-playback-check"))) {
         return runPlaybackCheck(application);
     }
@@ -149,6 +164,20 @@ int main(int argc, char* argv[]) {
                 && window.findChild<QWidget*>(QStringLiteral("playlist"))
                 && window.findChild<QDoubleSpinBox*>(QStringLiteral("tempoSpin"));
             if (!complete_shell) { application.exit(2); return; }
+            auto* vocal_button = window.findChild<QPushButton*>(QStringLiteral("singToMidiButton"));
+            auto* recorder_dialog = window.findChild<QDialog*>(QStringLiteral("recordingDialog"));
+            auto* vocal_parent = window.findChild<QDialog*>(QStringLiteral("pianoRollDialog"));
+            if (!vocal_button || !vocal_parent || vocal_button->window() != vocal_parent
+                || recorder_dialog->findChild<QPushButton*>(QStringLiteral("singToMidiButton"))) {
+                application.exit(44); return;
+            }
+            vocal_button->click();
+            auto* vocal_panel = window.findChild<QDialog*>(QStringLiteral("singToMidiPanel"));
+            if (!vocal_panel || !vocal_panel->isVisible()
+                || vocal_panel->findChild<QPushButton*>(QStringLiteral("vocalInsertButton"))->isEnabled()) {
+                application.exit(45); return;
+            }
+            vocal_panel->reject();
             for (const auto& pair : {
                      std::pair{"openRecorderButton", "recordingDialog"},
                      std::pair{"openPianoRollButton", "pianoRollDialog"}}) {

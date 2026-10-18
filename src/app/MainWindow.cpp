@@ -13,6 +13,7 @@
 #include "QtAudioCapture.hpp"
 #include "QtAudioPlayback.hpp"
 #include "QtMidiPlayback.hpp"
+#include "vocal/SingToMidiPanel.hpp"
 #include "hum/core/midi_file.hpp"
 #include "hum/core/note_editor.hpp"
 #include "hum/core/note_extraction.hpp"
@@ -146,6 +147,7 @@ public:
             return;
         }
         closed_ = true;
+        if (sing_panel_) { sing_panel_->reject(); }
         monitor_.stop();
         capture_.setDevicesChangedCallback({});
         playback_.stop();
@@ -171,6 +173,37 @@ public:
     }
 
 private:
+    [[nodiscard]] vocal::HostContext vocalContext() const {
+        vocal::HostContext context;
+        context.origin = playback_start_seconds_; context.bpm = tempo_spin_->value();
+        context.ppq = ticks_per_quarter_; context.track = playlist_->selectedTrack();
+        context.project_generation = vocal_project_generation_;
+        context.instrument = note_editor_.tracks()[context.track].instrument;
+        context.muted = note_editor_.tracks()[context.track].muted;
+        context.scale = note_editor_.scale(); context.magnet = note_editor_.magnetEnabled();
+        for (std::size_t index = 0; index < note_editor_.notes().size(); ++index) {
+            if (note_editor_.trackForNote(index) != context.track) { continue; }
+            const auto& note = note_editor_.projectedNotes()[index];
+            if (note.start_seconds + note.duration_seconds < context.origin || note.start_seconds > context.origin + 30) { continue; }
+            context.reference_notes.push_back({note.pitch, note.start_seconds, note.duration_seconds, note.velocity});
+            if (context.reference_notes.size() >= 2'000) { break; }
+        }
+        return context;
+    }
+
+    QString insertVocalPreview(const std::vector<hum::vocal::NoteEvent>& notes,
+        double origin, std::uint64_t generation) {
+        if (closed_ || generation != vocal_project_generation_) {
+            return QStringLiteral("The project changed. Record a new take for the current project.");
+        }
+        const auto inserted = vocal::PianoRollInsertAdapter::insert(note_editor_, notes, origin, playlist_->selectedTrack());
+        if (inserted != core::NoteEditResult::applied) {
+            return QStringLiteral("The phrase could not be inserted safely. Existing notes are unchanged.");
+        }
+        stopMelodyPlayback(); markDirty(); piano_roll_->refresh(true); updateEditorUi(); updateUi();
+        return {};
+    }
+
     void buildUi() {
         window_->setWindowTitle(QStringLiteral("Hum-to-MIDI Music Sketchpad — Piano Roll"));
         window_->setMinimumSize(1'180, 820);
@@ -475,6 +508,30 @@ private:
         piano_title_box->addWidget(piano_title_);
         piano_title_box->addWidget(editor_status_label_);
         piano_heading->addLayout(piano_title_box, 1);
+
+        auto* sing_button = new QPushButton(QStringLiteral("Sing to MIDI"), piano_card);
+        sing_button->setObjectName(QStringLiteral("singToMidiButton"));
+        sing_button->setToolTip(QStringLiteral("Record and preview with the separate local vocal engine."));
+        piano_heading->addWidget(sing_button);
+        QObject::connect(sing_button, &QPushButton::clicked, window_, [this] {
+            if (recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) {
+                editor_status_label_->setText(QStringLiteral("Finish the current Hum → MIDI take before opening Sing to MIDI."));
+                return;
+            }
+            stopMelodyPlayback(); playback_.stop(); cue_playback_.stop();
+            if (playback_start_seconds_ > 570) {
+                editor_status_label_->setText(QStringLiteral("Place the playhead before 570 seconds to leave room for a vocal take.")); return;
+            }
+            if (!sing_panel_) {
+                sing_panel_ = new vocal::SingToMidiPanel(piano_dialog_);
+                sing_panel_->setHost([this] { return vocalContext(); },
+                    [this](const auto& notes, double origin, std::uint64_t generation) {
+                        return insertVocalPreview(notes, origin, generation);
+                    });
+            }
+            sing_panel_->setOrigin(playback_start_seconds_);
+            sing_panel_->show(); sing_panel_->raise(); sing_panel_->activateWindow();
+        });
 
         undo_button_ = new QPushButton(QStringLiteral("Undo"), piano_card);
         redo_button_ = new QPushButton(QStringLiteral("Redo"), piano_card);
@@ -1180,6 +1237,8 @@ private:
         playback_.stop();
         cue_playback_.stop();
         phrase_processor_.cancel();
+        if (sing_panel_) { sing_panel_->reject(); }
+        ++vocal_project_generation_;
         applying_project_ = true;
         const auto& project = *loaded.project;
         {
@@ -2148,6 +2207,8 @@ private:
     QLabel* record_beat_label_{nullptr};
     QLabel* output_label_{nullptr};
     QPushButton* speaker_test_button_{nullptr};
+    vocal::SingToMidiPanel* sing_panel_{nullptr};
+    std::uint64_t vocal_project_generation_{0};
     double playback_start_seconds_{0.0};
     std::uint16_t ticks_per_quarter_{core::kDefaultTicksPerQuarter};
     PianoRollWidget* piano_roll_{nullptr};

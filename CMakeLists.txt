@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+include(cmake/NeuralVocal.cmake)
+
 add_library(hum_core STATIC
     src/core/midi.cpp
     src/core/midi_file.cpp
@@ -25,6 +27,13 @@ add_library(hum_core STATIC
     src/core/wave_fixture.cpp
 )
 add_library(HumToSing::core ALIAS hum_core)
+
+if(HUM_VOCAL_BACKEND_AVAILABLE)
+    add_executable(hum_vocal_fixture src/tools/VocalFixtureMain.cpp)
+    target_link_libraries(hum_vocal_fixture PRIVATE hum_vocal HumToSing::core)
+    target_compile_definitions(hum_vocal_fixture PRIVATE HUM_VOCAL_MODEL_FILE="${CMAKE_SOURCE_DIR}/resources/vocal/swift-f0.onnx")
+    set_target_properties(hum_vocal_fixture PROPERTIES OUTPUT_NAME HumVocalFixture)
+endif()
 
 add_executable(hum_pitch_fixture src/tools/PitchFixtureMain.cpp)
 target_link_libraries(hum_pitch_fixture PRIVATE HumToSing::core)
@@ -43,6 +52,12 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    add_executable(hum_vocal_capture_tests tests/vocal_capture_tests.cpp src/app/vocal/IsolatedMicRecorder.cpp)
+    target_include_directories(hum_vocal_capture_tests PRIVATE src/app tests)
+    target_link_libraries(hum_vocal_capture_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_vocal_capture_tests COMMAND hum_vocal_capture_tests)
+    set_tests_properties(hum_vocal_capture_tests PROPERTIES LABELS "core;vocal;recording")
+
     add_executable(hum_core_tests tests/core_tests.cpp)
     target_link_libraries(hum_core_tests PRIVATE HumToSing::core)
     add_test(NAME hum_core_tests COMMAND hum_core_tests)
@@ -108,6 +123,10 @@ if(HUM_BUILD_GUI)
     endif()
 
     qt_add_executable(hum_to_sing
+        src/app/vocal/IsolatedMicRecorder.cpp
+        src/app/vocal/SingToMidiPanel.cpp
+        src/app/vocal/VocalPreviewWidget.cpp
+        src/app/vocal/PianoRollInsertAdapter.cpp
         src/app/EditorToolbar.cpp
         src/app/EditorToolbar.hpp
         src/app/ToolIcons.cpp
@@ -133,9 +152,12 @@ if(HUM_BUILD_GUI)
         src/app/QtMidiPlayback.cpp
         src/app/QtMidiPlayback.hpp
     )
+    target_include_directories(hum_to_sing PRIVATE src/app)
+    hum_bundle_vocal(hum_to_sing)
     target_link_libraries(hum_to_sing
         PRIVATE
             HumToSing::core
+            hum_vocal
             Qt6::Concurrent
             Qt6::Multimedia
             Qt6::Widgets
@@ -192,6 +214,25 @@ if(HUM_BUILD_GUI)
     )
 
     if(BUILD_TESTING)
+        add_executable(hum_sing_to_midi_ui_tests tests/sing_to_midi_ui_tests.cpp
+            src/app/vocal/SingToMidiPanel.cpp src/app/vocal/IsolatedMicRecorder.cpp
+            src/app/vocal/VocalPreviewWidget.cpp src/app/vocal/PianoRollInsertAdapter.cpp
+            src/app/QtAudioCapture.cpp src/app/QtMidiPlayback.cpp)
+        target_include_directories(hum_sing_to_midi_ui_tests PRIVATE src/app tests)
+        target_link_libraries(hum_sing_to_midi_ui_tests PRIVATE HumToSing::core hum_vocal
+            Qt6::Widgets Qt6::Test Qt6::Concurrent Qt6::Multimedia)
+        if(APPLE)
+            target_sources(hum_sing_to_midi_ui_tests PRIVATE src/app/MacAudioInput.cpp)
+            target_link_libraries(hum_sing_to_midi_ui_tests PRIVATE hum_mac_instruments "-framework CoreAudio" "-framework AudioToolbox")
+        endif()
+        hum_bundle_vocal(hum_sing_to_midi_ui_tests)
+        if(HUM_VOCAL_BACKEND_AVAILABLE)
+            add_test(NAME hum_sing_to_midi_ui_tests COMMAND hum_sing_to_midi_ui_tests)
+            set_tests_properties(hum_sing_to_midi_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;vocal;neural" TIMEOUT 60)
+            add_test(NAME hum_bundled_vocal_backend COMMAND hum_to_sing --vocal-backend-check)
+            set_tests_properties(hum_bundled_vocal_backend PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;vocal;neural" TIMEOUT 30)
+        endif()
+
         add_test(NAME hum_app_smoke COMMAND hum_to_sing --smoke-test)
         set_tests_properties(hum_app_smoke PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
