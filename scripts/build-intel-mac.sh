@@ -116,6 +116,9 @@ for notice in "$repo_root"/resources/vocal/*.txt; do
     /usr/bin/ditto "$notice" "$staged_app/Contents/Resources/Documentation/Vocal/$(basename "$notice")"
 done
 /usr/bin/ditto "$repo_root/docs/sing-to-midi.md" "$staged_app/Contents/Resources/Documentation/sing-to-midi.md"
+/usr/bin/ditto "$repo_root/docs/voice-and-lyrics.md" "$staged_app/Contents/Resources/Documentation/voice-and-lyrics.md"
+/usr/bin/ditto "$repo_root/docs/project-files.md" "$staged_app/Contents/Resources/Documentation/project-files.md"
+/usr/bin/ditto "$repo_root/docs/overdub-recording.md" "$staged_app/Contents/Resources/Documentation/overdub-recording.md"
 # Ad-hoc signing is free, local, and is not Apple Developer ID notarization.
 /usr/bin/codesign --force --deep --sign - "$staged_app"
 /usr/bin/codesign --verify --deep --strict "$staged_app"

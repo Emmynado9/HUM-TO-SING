@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hum/core/midi.hpp"
+#include "hum/core/voice_clip.hpp"
 #include "hum/core/note_editor.hpp"
 #include "hum/core/scale.hpp"
 
@@ -12,7 +13,7 @@
 
 namespace hum::core {
 
-inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 5;
+inline constexpr std::uint32_t kCurrentProjectSchemaVersion = 6;
 
 struct ProjectDocument {
     std::uint32_t schema_version{kCurrentProjectSchemaVersion};
@@ -24,6 +25,8 @@ struct ProjectDocument {
     bool metronome_enabled{false};
     unsigned grid_division{16};
     RhythmSnap rhythm_snap{};
+    std::string lyrics;
+    std::vector<VoiceClip> voice_clips;
     std::vector<TimedMidiNote> canonical_notes;
     std::size_t track_count{1};
     std::vector<TrackDefinition> tracks;

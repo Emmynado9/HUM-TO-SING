@@ -3,6 +3,8 @@
 #include "QtAudioCapture.hpp"
 #include "QtMidiPlayback.hpp"
 #include "PianoRollInsertAdapter.hpp"
+#include "ArmedCapture.hpp"
+#include "RecordingGuidePlayer.hpp"
 #include <QDialog>
 #include <QFutureWatcher>
 #include <QTimer>
@@ -19,16 +21,20 @@ namespace hum::app::vocal {
 class VocalPreviewWidget;
 class SingToMidiPanel final : public QDialog {
 public:
-    explicit SingToMidiPanel(QWidget* parent = nullptr, core::IAudioCapture* capture = nullptr);
+    explicit SingToMidiPanel(QWidget* parent = nullptr, core::IAudioCapture* capture = nullptr,
+        IRecordingGuide* guide = nullptr);
     ~SingToMidiPanel() override;
     void setOrigin(double seconds);
     void setHost(std::function<HostContext()> context,
-        std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::uint64_t)> insert);
+        std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::uint64_t)> insert,
+        std::function<void()> prepare_recording = {}, std::function<void(double)> transport_position = {});
     [[nodiscard]] const std::vector<hum::vocal::NoteEvent>& previewNotes() const { return preview_notes_; }
     void reject() override;
 private:
     void refreshDevices();
     void record();
+    void beginCapture(double origin);
+    void stopTake();
     void tick();
     void updateControls();
     void reportCaptureError(core::ServiceStatus error);
@@ -40,7 +46,10 @@ private:
     [[nodiscard]] hum::vocal::Config config() const;
     QtAudioCapture capture_;
     core::IAudioCapture* active_capture_;
+    ArmedCapture armed_capture_;
     IsolatedMicRecorder recorder_;
+    RecordingGuidePlayer guide_player_;
+    IRecordingGuide* guide_;
     QtMidiPlayback preview_playback_;
     QTimer timer_;
     QComboBox* devices_{};
@@ -56,6 +65,8 @@ private:
     QProgressBar* progress_{};
     VocalPreviewWidget* preview_{};
     std::function<HostContext()> context_;
+    std::function<void()> prepare_recording_;
+    std::function<void(double)> transport_position_;
     std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::uint64_t)> insert_callback_;
     HostContext take_context_;
     std::shared_ptr<std::atomic_bool> cancelled_;

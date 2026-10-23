@@ -14,6 +14,8 @@
 #include "QtAudioPlayback.hpp"
 #include "QtMidiPlayback.hpp"
 #include "vocal/SingToMidiPanel.hpp"
+#include "ArmedCapture.hpp"
+#include "RecordingGuidePlayer.hpp"
 #include "hum/core/midi_file.hpp"
 #include "hum/core/note_editor.hpp"
 #include "hum/core/note_extraction.hpp"
@@ -26,6 +28,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QDoubleSpinBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -112,10 +115,12 @@ namespace {
 
 class MainWindow::Impl final {
 public:
-    explicit Impl(MainWindow* window)
+    explicit Impl(MainWindow* window, core::IAudioCapture* capture, IRecordingGuide* guide)
         : window_(window),
           capture_(window),
-          recorder_(capture_, 30.0, 0.98F),
+          capture_source_(capture ? *capture : capture_),
+          armed_capture_(capture_source_), recorder_(armed_capture_, 30.0, 0.98F),
+          guide_player_(window), guide_(guide ? guide : &guide_player_),
           playback_(window),
           midi_playback_(window),
           cue_playback_(window),
@@ -147,6 +152,7 @@ public:
             return;
         }
         closed_ = true;
+        guide_->stop(); armed_capture_.stop();
         if (sing_panel_) { sing_panel_->reject(); }
         monitor_.stop();
         capture_.setDevicesChangedCallback({});
@@ -165,6 +171,7 @@ public:
     }
 
     [[nodiscard]] bool requestClose() {
+        if (guide_->active() || recorder_.state() == core::RecordingState::recording) { stopRecording(); }
         if (!confirmDiscardChanges(QStringLiteral("close the application"))) {
             return false;
         }
@@ -175,11 +182,20 @@ public:
 private:
     [[nodiscard]] vocal::HostContext vocalContext() const {
         vocal::HostContext context;
-        context.origin = playback_start_seconds_; context.bpm = tempo_spin_->value();
+        context.origin = midi_playback_.isPlaying() || midi_playback_.isPaused() ? midi_playback_.positionSeconds() : playback_start_seconds_; context.bpm = tempo_spin_->value();
         context.ppq = ticks_per_quarter_; context.track = playlist_->selectedTrack();
         context.project_generation = vocal_project_generation_;
         context.instrument = note_editor_.tracks()[context.track].instrument;
         context.muted = note_editor_.tracks()[context.track].muted;
+        context.voice_clips = voice_clips_;
+        context.recording_click = metronome_button_->isChecked();
+        context.backing_notes = note_editor_.projectedNotes();
+        context.backing_voices.resize(context.backing_notes.size(), core::InstrumentVoice::grand_piano);
+        for (std::size_t i = 0; i < context.backing_notes.size(); ++i) {
+            if (const auto track = note_editor_.trackForNote(i)) {
+                context.backing_voices[i] = note_editor_.tracks()[*track].instrument;
+            }
+        }
         context.scale = note_editor_.scale(); context.magnet = note_editor_.magnetEnabled();
         for (std::size_t index = 0; index < note_editor_.notes().size(); ++index) {
             if (note_editor_.trackForNote(index) != context.track) { continue; }
@@ -238,13 +254,13 @@ private:
         open_project_button_->setObjectName(QStringLiteral("openProjectButton"));
         save_project_button_->setObjectName(QStringLiteral("saveProjectButton"));
         open_project_button_->setToolTip(QStringLiteral(
-            "Open editable notes and settings. Original recordings are not stored in project files."));
+            "Open notes, settings, lyrics and Playlist voice recordings."));
         save_project_button_->setToolTip(QStringLiteral(
             "Save canonical editable notes and settings. Session audio remains in memory only."));
         header->addWidget(project_name_label_, 0, Qt::AlignTop);
         header->addWidget(open_project_button_, 0, Qt::AlignTop);
         header->addWidget(save_project_button_, 0, Qt::AlignTop);
-        auto* privacy = new QLabel(QStringLiteral("●  IN MEMORY · NEVER UPLOADED"), root);
+        auto* privacy = new QLabel(QStringLiteral("●  LOCAL ONLY · NEVER UPLOADED"), root);
         privacy->setObjectName(QStringLiteral("privacyBadge"));
         privacy->setAlignment(Qt::AlignCenter);
         header->addWidget(privacy, 0, Qt::AlignTop);
@@ -323,20 +339,20 @@ private:
         record_metronome_button_->setObjectName(QStringLiteral("recordMetronomeButton"));
         record_metronome_button_->setCheckable(true);
         record_metronome_button_->setIcon(toolIcon(ToolIcon::metronome));
-        record_metronome_button_->setToolTip(QStringLiteral("Keep a 4/4 click playing while you record. Stops with the recording."));
+        record_metronome_button_->setToolTip(QStringLiteral("Always count four beats before recording. Turn this on to continue the click during the take."));
         record_tempo_spin_ = new QDoubleSpinBox(recorder_card);
         record_tempo_spin_->setObjectName(QStringLiteral("recordTempoSpin"));
         record_tempo_spin_->setRange(20,400);record_tempo_spin_->setDecimals(1);
         record_tempo_spin_->setValue(120);record_tempo_spin_->setSuffix(QStringLiteral(" BPM"));
         record_tempo_spin_->setAccessibleName(QStringLiteral("Recording metronome tempo"));
-        record_beat_label_ = new QLabel(QStringLiteral("4/4 · starts with Record"), recorder_card);
+        record_beat_label_ = new QLabel(QStringLiteral("4-beat count-in · then record with tracks"), recorder_card);
         record_beat_label_->setObjectName(QStringLiteral("recordBeatLabel"));
         record_beat_label_->setWordWrap(true);
         record_beat_row->addWidget(record_metronome_button_);
         record_beat_row->addWidget(record_tempo_spin_);
         record_beat_row->addWidget(record_beat_label_,1);
         recorder_layout->addLayout(record_beat_row);
-        auto* headphones = new QLabel(QStringLiteral("Use headphones to keep the click out of your microphone recording."), recorder_card);
+        auto* headphones = new QLabel(QStringLiteral("Use headphones to keep the backing tracks and count-in out of the microphone."), recorder_card);
         headphones->setObjectName(QStringLiteral("footnote"));headphones->setWordWrap(true);
         recorder_layout->addWidget(headphones);
 
@@ -387,7 +403,7 @@ private:
         phrase_controls->addStretch();
         phrase_controls->addWidget(export_button_);
         auto* phrase_note = new QLabel(
-            QStringLiteral("New takes append regions. Original audio and raw analysis are retained for the latest take only; projects save notes, not recordings."),
+            QStringLiteral("New takes append regions. Hum → MIDI keeps only the latest source take in memory. Use Record voice in the Playlist to save vocal audio with the project."),
             melody_tab);
         phrase_note->setWordWrap(true);
         phrase_note->setObjectName(QStringLiteral("footnote"));
@@ -514,12 +530,12 @@ private:
         sing_button->setToolTip(QStringLiteral("Record and preview with the separate local vocal engine."));
         piano_heading->addWidget(sing_button);
         QObject::connect(sing_button, &QPushButton::clicked, window_, [this] {
-            if (recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) {
+            if (recorder_.state() == core::RecordingState::recording || guide_->active() || phrase_processor_.isBusy()) {
                 editor_status_label_->setText(QStringLiteral("Finish the current Hum → MIDI take before opening Sing to MIDI."));
                 return;
             }
-            stopMelodyPlayback(); playback_.stop(); cue_playback_.stop();
-            if (playback_start_seconds_ > 570) {
+            playback_.stop(); cue_playback_.stop();
+            if (vocalContext().origin > 570) {
                 editor_status_label_->setText(QStringLiteral("Place the playhead before 570 seconds to leave room for a vocal take.")); return;
             }
             if (!sing_panel_) {
@@ -527,9 +543,10 @@ private:
                 sing_panel_->setHost([this] { return vocalContext(); },
                     [this](const auto& notes, double origin, std::uint64_t generation) {
                         return insertVocalPreview(notes, origin, generation);
-                    });
+                    }, [this] { stopMelodyPlayback(); playback_.stop(); cue_playback_.stop(); },
+                    [this](double position) { playback_start_seconds_ = position; showTransportPosition(position); });
             }
-            sing_panel_->setOrigin(playback_start_seconds_);
+            sing_panel_->setOrigin(vocalContext().origin);
             sing_panel_->show(); sing_panel_->raise(); sing_panel_->activateWindow();
         });
 
@@ -672,6 +689,25 @@ private:
         auto* piano_window_layout = new QVBoxLayout(piano_dialog_);
         piano_window_layout->addWidget(piano_card);
 
+        lyrics_dialog_ = new QDialog(window_);
+        lyrics_dialog_->setObjectName(QStringLiteral("lyricsDialog"));
+        lyrics_dialog_->setWindowTitle(QStringLiteral("Lyrics — Songwriting notepad"));
+        lyrics_dialog_->resize(620, 660);
+        auto* lyrics_layout = new QVBoxLayout(lyrics_dialog_);
+        auto* lyrics_hint = new QLabel(QStringLiteral("Write while your song plays. Lyrics are saved with your project."), lyrics_dialog_);
+        lyrics_hint->setWordWrap(true); lyrics_layout->addWidget(lyrics_hint);
+        lyrics_edit_ = new QPlainTextEdit(lyrics_dialog_);
+        lyrics_edit_->setObjectName(QStringLiteral("lyricsEditor"));
+        lyrics_edit_->setAccessibleName(QStringLiteral("Song lyrics"));
+        lyrics_edit_->setPlaceholderText(QStringLiteral("Song title\n\n[Verse 1]\nWrite your lyrics here…\n\n[Chorus]\n"));
+        lyrics_edit_->setStyleSheet(QStringLiteral("QPlainTextEdit { background: white; color: #202020; padding: 16px; font-size: 17px; }"));
+        lyrics_layout->addWidget(lyrics_edit_, 1);
+        auto* lyrics_save = new QPushButton(QStringLiteral("Save project"), lyrics_dialog_);
+        lyrics_save->setObjectName(QStringLiteral("lyricsSaveButton")); lyrics_layout->addWidget(lyrics_save);
+        QObject::connect(lyrics_edit_, &QPlainTextEdit::textChanged, window_, [this] { markDirty(); });
+        QObject::connect(lyrics_save, &QPushButton::clicked, window_, [this] { static_cast<void>(saveProject()); });
+        auto* lyrics_shortcut = new QShortcut(QKeySequence::Save, lyrics_dialog_);
+        QObject::connect(lyrics_shortcut, &QShortcut::activated, window_, [this] { static_cast<void>(saveProject()); });
         auto* feature_toolbar = new QHBoxLayout();
         auto featureButton = [this, root, feature_toolbar](const QString& text,
             const QString& name, QDialog* dialog) {
@@ -686,6 +722,7 @@ private:
         };
         open_recorder_button_ = featureButton(QStringLiteral("Hum → MIDI"), QStringLiteral("openRecorderButton"), recording_dialog_);
         featureButton(QStringLiteral("Piano roll"), QStringLiteral("openPianoRollButton"), piano_dialog_);
+        featureButton(QStringLiteral("Lyrics"), QStringLiteral("openLyricsButton"), lyrics_dialog_);
         feature_toolbar->addStretch();
         midi_play_button_ = new QPushButton(QStringLiteral("Play"), root);
         midi_play_button_->setObjectName(QStringLiteral("midiPlayButton"));
@@ -747,6 +784,13 @@ private:
         add_track_button_ = playlistButton(QStringLiteral("+ Track"), QStringLiteral("addTrackButton"));
         duplicate_region_button_ = playlistButton(QStringLiteral("Duplicate region"), QStringLiteral("duplicateRegionButton"));
         delete_region_button_ = playlistButton(QStringLiteral("Delete region"), QStringLiteral("deleteRegionButton"));
+        voice_record_button_ = playlistButton(QStringLiteral("Record voice"), QStringLiteral("recordVoiceButton"));
+        voice_record_button_->setIcon(toolIcon(ToolIcon::microphone));
+        voice_record_button_->setToolTip(QStringLiteral("Record actual vocal audio after four beats, with the Playlist playing. Maximum 30 seconds per take."));
+        QObject::connect(voice_record_button_, &QPushButton::clicked, window_, [this] {
+            if (guide_->active() || recorder_.state() == core::RecordingState::recording) stopRecording();
+            else { showFeature(recording_dialog_); startRecording(true); }
+        });
         playlist_undo_button_ = playlistButton(QStringLiteral("Undo"), QStringLiteral("playlistUndoButton"));
         playlist_redo_button_ = playlistButton(QStringLiteral("Redo"), QStringLiteral("playlistRedoButton"));
         add_track_button_->setIcon(toolIcon(ToolIcon::addTrack));
@@ -792,6 +836,13 @@ private:
         workspace_message_label_->setAccessibleName(QStringLiteral("Workspace status"));
         playlist_layout->addWidget(workspace_message_label_);
         playlist_ = new PlaylistWidget(note_editor_, playlist_card);
+        playlist_->setVoiceClips(&voice_clips_, [this](std::size_t index, bool remove) {
+            if (index >= voice_clips_.size()) return;
+            stopMelodyPlayback();
+            if (remove) voice_clips_.erase(voice_clips_.begin() + static_cast<std::ptrdiff_t>(index));
+            else voice_clips_[index].muted = !voice_clips_[index].muted;
+            markDirty(); playlist_->refresh(); updateUi();
+        });
         playlist_->setObjectName(QStringLiteral("playlist"));
         playlist_->setMinimumHeight(360);
         playlist_layout->addWidget(playlist_, 1);
@@ -843,7 +894,7 @@ private:
             QProgressBar { background: #ededed; border: 0; border-radius: 5px; height: 10px; text-align: center; color: #555; }
             QProgressBar::chunk { background: #080808; border-radius: 5px; }
             QAbstractScrollArea { background: white; border: 1px solid #dedee1; border-radius: 9px; }
-            #openRecorderButton, #openPianoRollButton,
+            #openRecorderButton, #openPianoRollButton, #openLyricsButton, #recordVoiceButton, #lyricsSaveButton,
             #addTrackButton, #duplicateRegionButton, #deleteRegionButton,
             #playlistUndoButton, #playlistRedoButton {
                 background: white; color: #080808; border: 1px solid #cfcfcf;
@@ -937,6 +988,7 @@ private:
         if (loop_range_) { return loop_range_; }
         double end = 0;
         for (const auto& note : note_editor_.notes()) { end = std::max(end, note.start_seconds + note.duration_seconds); }
+        for (const auto& clip : voice_clips_) end = std::max(end, clip.start_seconds + clip.duration());
         if (end <= 0 && metronome_button_->isChecked()) { end = 240.0 / tempo_spin_->value(); }
         const core::LoopRange range{0, end};
         return range.isValid() ? std::optional{range} : std::nullopt;
@@ -1029,21 +1081,13 @@ private:
             ? QStringLiteral("Finding hummed chord roots… 0%")
             : QStringLiteral("Analyzing the saved audio after recording… 0%"));
         const auto conversion_track = playlist_->selectedTrack();
-        double conversion_offset = 0.0;
-        for (const auto& region : note_editor_.regions()) {
-            if (region.track == conversion_track) {
-                for (const auto index : region.note_indices) {
-                    const auto& note = note_editor_.notes()[index];
-                    conversion_offset = std::max(conversion_offset, note.start_seconds + note.duration_seconds);
-                }
-            }
-        }
+        const auto conversion_offset = recorded_origin_;
         if (!phrase_processor_.convert(
                 recording,
                 pitchConfig(),
                 core::NoteExtractionConfig{},
                 tempo_spin_->value(),
-                core::kDefaultTicksPerQuarter,
+                ticks_per_quarter_,
                 [this, conversion_track, conversion_offset, make_chords, conversion_scale, conversion_scale_name, connect_roots](PhraseWorkerResult result) {
                     phrase_progress_->setValue(100);
                     last_conversion_ = std::move(result.conversion);
@@ -1124,6 +1168,8 @@ private:
         project.playlist_regions = note_editor_.regions();
         project.track_count = note_editor_.trackCount();
         project.tracks = note_editor_.tracks();
+        project.lyrics = lyrics_edit_->toPlainText().toUtf8().toStdString();
+        project.voice_clips = voice_clips_;
         return project;
     }
 
@@ -1170,7 +1216,7 @@ private:
         dirty_ = false;
         updateWindowTitle();
         phrase_status_label_->setText(QStringLiteral(
-            "Project saved safely: %1. Editable notes and settings are stored; the original recording remains session-only and is not embedded.")
+            "Project saved safely: %1. Notes, settings, lyrics and Playlist voice recordings are stored.")
             .arg(destination));
         workspace_message_label_->setText(phrase_status_label_->text());
         return true;
@@ -1189,7 +1235,7 @@ private:
         dirty_ = false;
         updateWindowTitle();
         phrase_status_label_->setText(QStringLiteral(
-            "Project saved safely: %1. Original audio is not embedded.").arg(project_path_));
+            "Project saved safely: %1. Lyrics and Playlist voice audio are included.").arg(project_path_));
         workspace_message_label_->setText(phrase_status_label_->text());
         return true;
     }
@@ -1201,8 +1247,7 @@ private:
         const auto choice = QMessageBox::warning(
             window_,
             QStringLiteral("Unsaved project changes"),
-            QStringLiteral("Save your editable notes and settings before you %1?\n\n"
-                "Project files do not include the in-memory original recording.").arg(action),
+            QStringLiteral("Save your notes, lyrics and Playlist voice recordings before you %1?").arg(action),
             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
             QMessageBox::Save);
         if (choice == QMessageBox::Save) {
@@ -1238,9 +1283,12 @@ private:
         cue_playback_.stop();
         phrase_processor_.cancel();
         if (sing_panel_) { sing_panel_->reject(); }
+        guide_->stop(); static_cast<void>(recorder_.stop()); armed_capture_.stop();
         ++vocal_project_generation_;
         applying_project_ = true;
         const auto& project = *loaded.project;
+        voice_clips_ = project.voice_clips;
+        { const QSignalBlocker blocker(lyrics_edit_); lyrics_edit_->setPlainText(QString::fromStdString(project.lyrics)); }
         {
             const QSignalBlocker root_blocker(root_pitch_combo_);
             const QSignalBlocker scale_blocker(scale_mode_combo_);
@@ -1283,7 +1331,7 @@ private:
         if (project.rhythm_snap.enabled) { last_snap_index_ = rhythm_snap_combo_->currentIndex(); }
         { const QSignalBlocker blocker(record_tempo_spin_); record_tempo_spin_->setValue(project.tempo_bpm); }
         piano_roll_->refresh(true);
-        static_cast<void>(recorder_.clearRecording());
+        static_cast<void>(recorder_.clearRecording()); recorded_origin_ = 0;
         updateMetadata();
         last_conversion_.reset();
         project_path_ = source;
@@ -1294,7 +1342,7 @@ private:
         applying_project_ = false;
         phrase_progress_->setValue(0);
         phrase_status_label_->setText(QStringLiteral(
-            "Project loaded: %1. Its canonical notes and settings are editable. Original audio is omitted by the project format, so Play original is unavailable.")
+            "Project loaded: %1. Notes, lyrics and Playlist voice recordings are restored. Hum → MIDI source takes are session-only.")
             .arg(source));
         updateScaleGuidanceUi();
         updateEditorUi();
@@ -1327,7 +1375,7 @@ private:
     }
 
     void toggleMidiPlayback() {
-        if (recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) { return; }
+        if (recorder_.state() == core::RecordingState::recording || guide_->active() || phrase_processor_.isBusy()) { return; }
         if (midi_playback_.isPreparing()) {
             stopMelodyPlayback();
         } else if (midi_playback_.isPlaying()) {
@@ -1336,7 +1384,7 @@ private:
         } else if (midi_playback_.isPaused()) {
             midi_playback_.resume();
         } else {
-            if (note_editor_.projectedNotes().empty() && !metronome_button_->isChecked()) {
+            if (note_editor_.projectedNotes().empty() && voice_clips_.empty() && !metronome_button_->isChecked()) {
                 return;
             }
             playback_.stop();
@@ -1352,7 +1400,7 @@ private:
                     showTransportPosition(midi_playback_.positionSeconds());
                     if (error) { setStatus(message, true); }
                     updateUi();
-                }, playback_start_seconds_, tempo_spin_->value(), metronome_button_->isChecked(), std::move(voices), activeLoopRange());
+                }, playback_start_seconds_, tempo_spin_->value(), metronome_button_->isChecked(), std::move(voices), activeLoopRange(), voice_clips_);
         }
         updateUi();
     }
@@ -1416,6 +1464,9 @@ private:
         QObject::connect(open_project_button_, &QPushButton::clicked, window_, [this] { loadProject(); });
         QObject::connect(save_project_button_, &QPushButton::clicked, window_, [this] {
             static_cast<void>(saveProject());
+        });
+        QObject::connect(recording_dialog_, &QDialog::finished, window_, [this] {
+            if (guide_->active() || recorder_.state() == core::RecordingState::recording) { stopRecording(); }
         });
         QObject::connect(record_button_, &QPushButton::clicked, window_, [this] { startRecording(); });
         QObject::connect(stop_button_, &QPushButton::clicked, window_, [this] { stopRecording(); });
@@ -1537,7 +1588,7 @@ private:
             piano_roll_->setShowOtherTracks(show);
         });
         piano_roll_->setAuditionCallback([this](std::uint8_t pitch) {
-            if (recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) { return; }
+            if (recorder_.state() == core::RecordingState::recording || guide_->active() || phrase_processor_.isBusy()) { return; }
             const auto voice = note_editor_.tracks()[playlist_->selectedTrack()].instrument;
             audition_playback_.play({{pitch, 90, 0.0, .8, 0}}, [this](const QString& text, bool error) {
                 if (error) { editor_status_label_->setText(text); }
@@ -1618,9 +1669,7 @@ private:
         QObject::connect(metronome_button_, &QPushButton::toggled, window_, [this] {
             stopMelodyPlayback();
             cue_playback_.stop();
-            if (recorder_.state() == core::RecordingState::recording && metronome_button_->isChecked()) {
-                startRecordingClick();
-            } else { record_beat_label_->setText(QStringLiteral("4/4 · starts with Record")); }
+            record_beat_label_->setText(QStringLiteral("4-beat count-in · then record with tracks"));
             markDirty(); updateUi();
         });
         QObject::connect(rhythm_snap_combo_, &QComboBox::currentIndexChanged, window_,
@@ -1688,7 +1737,7 @@ private:
     void refreshDevices() {
         const auto previous_id = device_combo_->currentData().toString();
         device_combo_->clear();
-        for (const auto& device : capture_.devices()) {
+        for (const auto& device : capture_source_.devices()) {
             const auto label = QString::fromStdString(device.name)
                 + (device.is_default ? QStringLiteral(" · Default") : QString{});
             device_combo_->addItem(label, QString::fromStdString(device.id));
@@ -1700,7 +1749,7 @@ private:
             }
         }
 
-        const auto permission = capture_.permissionStatus();
+        const auto permission = capture_source_.permissionStatus();
         permission_button_->setVisible(permission != core::PermissionStatus::granted);
         permission_button_->setText(permission == core::PermissionStatus::denied
             ? QStringLiteral("Retry access") : QStringLiteral("Enable microphone"));
@@ -1719,7 +1768,7 @@ private:
     void requestPermission() {
         permission_button_->setEnabled(false);
         setStatus(QStringLiteral("Waiting for microphone permission…"), false);
-        capture_.requestPermission([this](const core::PermissionStatus) {
+        capture_source_.requestPermission([this](const core::PermissionStatus) {
             QMetaObject::invokeMethod(window_, [this] {
                 permission_button_->setEnabled(true);
                 refreshDevices();
@@ -1734,43 +1783,54 @@ private:
             : QStringLiteral("No supported speaker output. Select an output in macOS Sound settings."));
     }
 
-    void startRecordingClick() {
-        record_beat_label_->setText(QStringLiteral("Starting click…"));
-        cue_playback_.play({}, [this](const QString& message, bool error) {
-            if (error) {
-                record_beat_label_->setText(QStringLiteral("Click unavailable: %1").arg(message));
-                setStatus(QStringLiteral("Recording continues, but the metronome failed: %1").arg(message), true);
-            }
-        }, 0.0, tempo_spin_->value(), true);
-    }
-
     void stopRecordingClick() {
-        cue_playback_.stop();
-        record_beat_label_->setText(QStringLiteral("4/4 · starts with Record"));
+        guide_->stop(); armed_capture_.stop(); cue_playback_.stop();
+        record_beat_label_->setText(QStringLiteral("4-beat count-in · then record with tracks"));
     }
 
-    void startRecording() {
-        stopMelodyPlayback();
-        playback_.stop();
-        stopRecordingClick();
-        if (recorder_.state() == core::RecordingState::error) {
-            static_cast<void>(recorder_.acknowledgeError());
-        }
-        if (device_combo_->currentIndex() < 0) {
-            setStatus(errorMessage(core::ServiceStatus::unavailable), true);
-            return;
-        }
-        if (!ensureConversionTrack(conversion_tabs_->currentIndex() == 1)) { updateUi(); return; }
+    void startRecording(bool voice = false) {
+        if (guide_->active() || recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) { return; }
+        if (device_combo_->currentIndex() < 0) { setStatus(errorMessage(core::ServiceStatus::unavailable), true); return; }
+        if (recorder_.state() == core::RecordingState::error) { static_cast<void>(recorder_.acknowledgeError()); }
+        if (voice && voice_clips_.size() >= 16) { setStatus(QStringLiteral("The project already has 16 voice takes. Delete a take before recording another."), true); return; }
+        voice_recording_ = voice;
+        recording_dialog_->setWindowTitle(voice ? QStringLiteral("Record voice — Playlist audio") : QStringLiteral("Hum → MIDI — Record and convert"));
+        if (!voice && !ensureConversionTrack(conversion_tabs_->currentIndex() == 1)) { updateUi(); return; }
+        const auto context = vocalContext();
+        auto plan = core::makeOverdubPlan(context.backing_notes, context.backing_voices,
+            context.origin, context.bpm, context.recording_click);
+        if (!plan) { setStatus(QStringLiteral("Place the playhead before 570 seconds to leave room for a take."), true); return; }
+        const auto armed = armed_capture_.arm(device_combo_->currentData().toString().toStdString());
+        if (armed != core::ServiceStatus::ok) { setStatus(errorMessage(armed), true); return; }
+        stopMelodyPlayback(); playback_.stop(); cue_playback_.stop();
+        setStatus(QStringLiteral("Preparing four count-in beats… Recording starts after beat 4."), false);
+        record_beat_label_->setText(QStringLiteral("Preparing count-in…"));
+        plan->voice_clips = voice_clips_;
+        guide_->start(*plan, {
+            [this](double origin) { beginRecordingCapture(origin); },
+            [this](int beat, double position) {
+                playback_start_seconds_ = position; showTransportPosition(position);
+                record_beat_label_->setText(beat > 0 ? QStringLiteral("Count in: %1 / 4 — get ready…").arg(beat)
+                    : QStringLiteral("Recording with tracks · %1 s").arg(position, 0, 'f', 2));
+            },
+            [this](const QString& error) {
+                stopRecording(); if (!error.isEmpty()) { setStatus(error, true); }
+            }});
+        updateUi();
+    }
+
+    void beginRecordingCapture(double origin) {
         const auto result = recorder_.start(device_combo_->currentData().toString().toStdString());
         switch (result) {
         case core::StartRecordingResult::started:
+            recorded_origin_ = origin;
             phrase_processor_.cancel();
             clearPhraseConversion(QStringLiteral(
                 "Recording in progress. After Stop, conversion adds a new region; existing regions are retained."), false);
             level_meter_->setLevel(0.0F, false);
             clip_label_->setVisible(false);
-            setStatus(QStringLiteral("Recording… hum or sing one monophonic phrase."), false);
-            if (metronome_button_->isChecked()) { startRecordingClick(); }
+            setStatus(voice_recording_ ? QStringLiteral("Recording your voice with the Playlist… Press Stop to add the audio clip.")
+                : QStringLiteral("Recording with tracks… hum a melody or chord roots, then press Stop."), false);
             break;
         case core::StartRecordingResult::permission_required:
             setStatus(errorMessage(core::ServiceStatus::permission_required), false);
@@ -1794,11 +1854,14 @@ private:
             setStatus(QStringLiteral("The recorder is closing."), true);
             break;
         }
+        if (result != core::StartRecordingResult::started) { stopRecordingClick(); }
         updateUi();
     }
 
     void stopRecording() {
+        const auto counting = guide_->active() && recorder_.state() != core::RecordingState::recording;
         stopRecordingClick();
+        if (counting) { setStatus(QStringLiteral("Count-in cancelled. No new take was recorded."), false); }
         if (recorder_.stop()) {
             presentCompletedRecording(core::RecordingStopReason::user);
         }
@@ -1820,6 +1883,19 @@ private:
             setStatus(QStringLiteral("The 30-second safety limit was reached. Your bounded recording is ready to play."), false);
         } else {
             setStatus(QStringLiteral("Recording ready. Play the original phrase to verify the capture."), false);
+        }
+        if (voice_recording_ && recording && recording->sampleCount() > 0) {
+            auto clip = core::makeVoiceClip(*recording, recorded_origin_);
+            if (clip) {
+                clip->name = "Voice " + std::to_string(voice_clips_.size() + 1);
+                auto candidate = voice_clips_; candidate.push_back(std::move(*clip));
+                if (core::validVoiceClips(candidate)) {
+                    voice_clips_ = std::move(candidate); markDirty(); playlist_->refresh();
+                    setStatus(QStringLiteral("Voice added to Playlist. Save the project to keep the audio. Right-click its lane to mute or delete."), false);
+                } else setStatus(QStringLiteral("Voice storage is full. The latest take is still available through Play original."), true);
+            } else setStatus(QStringLiteral("This take could not be added as voice audio."), true);
+            voice_recording_ = false;
+            return;
         }
         if (recording && recording->sampleCount() > 0) {
             beginPhraseConversion(conversion_tabs_->currentIndex() == 1);
@@ -1843,12 +1919,17 @@ private:
     }
 
     void poll() {
+        if (guide_->active() && armed_capture_.error() != core::ServiceStatus::ok) {
+            const auto error = armed_capture_.error(); stopRecording(); setStatus(errorMessage(error), true);
+        }
         if (const auto event = recorder_.service()) {
             stopRecordingClick();
             if (*event == core::RecordingStopReason::device_failure) {
+                const bool was_voice = voice_recording_;
+                if (was_voice) { presentCompletedRecording(*event); }
                 setStatus(errorMessage(recorder_.lastError()), true);
                 updateMetadata();
-                if (recorder_.recording() && recorder_.recording()->sampleCount() > 0) {
+                if (!was_voice && recorder_.recording() && recorder_.recording()->sampleCount() > 0) {
                     beginPhraseConversion(conversion_tabs_->currentIndex() == 1);
                 }
             } else {
@@ -1863,10 +1944,6 @@ private:
             clip_label_->setVisible(metrics.clipped);
             duration_label_->setText(durationText(metrics.duration_seconds, recorder_.maximumDurationSeconds()));
             samples_value_->setText(QString::number(metrics.sample_count));
-            if (cue_playback_.isPlaying() && metronome_button_->isChecked()) {
-                const auto beat = static_cast<int>(std::floor(cue_playback_.positionSeconds() * tempo_spin_->value() / 60.0)) % 4 + 1;
-                record_beat_label_->setText(QStringLiteral("Beat %1 / 4 · recording").arg(beat));
-            }
         } else {
             displayed_level_ = 0.0F;
         }
@@ -2026,17 +2103,19 @@ private:
 
     void updateUi() {
         const auto state = recorder_.state();
-        const auto recording_active = state == core::RecordingState::recording
+        const auto recording_active = guide_->active() || state == core::RecordingState::recording
             || state == core::RecordingState::starting
             || state == core::RecordingState::stopping;
-        const auto can_record = !recording_active
+        const auto can_record = !recording_active && !phrase_processor_.isBusy()
             && state != core::RecordingState::closed
-            && capture_.permissionStatus() == core::PermissionStatus::granted
+            && capture_source_.permissionStatus() == core::PermissionStatus::granted
             && device_combo_->count() > 0;
         open_recorder_button_->setText(recording_active
             ? QStringLiteral("●  Recording… open controls") : QStringLiteral("Hum → MIDI"));
         record_button_->setEnabled(can_record);
-        stop_button_->setEnabled(state == core::RecordingState::recording);
+        stop_button_->setEnabled(recording_active);
+        voice_record_button_->setText(recording_active ? QStringLiteral("Stop recording") : QStringLiteral("Record voice"));
+        voice_record_button_->setEnabled(recording_active || (!phrase_processor_.isBusy() && state != core::RecordingState::closed));
         device_combo_->setEnabled(!recording_active);
         refresh_button_->setEnabled(!recording_active);
         permission_button_->setEnabled(!recording_active);
@@ -2071,7 +2150,7 @@ private:
             !recording_active && !phrase_processor_.isBusy()
             && !note_editor_.notes().empty());
         midi_play_button_->setEnabled(!recording_active && !phrase_processor_.isBusy() && !midi_playback_.isPlaying()
-            && (!note_editor_.notes().empty() || metronome_button_->isChecked()));
+            && (!note_editor_.notes().empty() || !voice_clips_.empty() || metronome_button_->isChecked()));
         const auto play_label = midi_playback_.isPreparing() ? QStringLiteral("Cancel preparation")
             : midi_playback_.isPaused() ? QStringLiteral("Continue playback (Space)") : QStringLiteral("Play (Space)");
         for (auto* button : {midi_play_button_, piano_play_button_}) {
@@ -2100,7 +2179,7 @@ private:
           record_metronome_button_->setChecked(metronome_button_->isChecked()); }
         record_metronome_button_->setText(metronome_button_->isChecked()
             ? QStringLiteral("Metronome ON") : QStringLiteral("Metronome OFF"));
-        record_metronome_button_->setEnabled(!phrase_processor_.isBusy());
+        record_metronome_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
         record_tempo_spin_->setEnabled(!recording_active && !phrase_processor_.isBusy());
         speaker_test_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
         add_note_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
@@ -2136,9 +2215,19 @@ private:
         status_label_->style()->polish(status_label_);
     }
 
+    std::vector<core::VoiceClip> voice_clips_;
+    bool voice_recording_{false};
+    QPushButton* voice_record_button_{nullptr};
+    QDialog* lyrics_dialog_{nullptr};
+    QPlainTextEdit* lyrics_edit_{nullptr};
     MainWindow* window_;
     QtAudioCapture capture_;
+    core::IAudioCapture& capture_source_;
+    ArmedCapture armed_capture_;
     core::RecordingController recorder_;
+    RecordingGuidePlayer guide_player_;
+    IRecordingGuide* guide_;
+    double recorded_origin_{0};
     QtAudioPlayback playback_;
     QtMidiPlayback midi_playback_;
     QtMidiPlayback cue_playback_;
@@ -2245,9 +2334,9 @@ private:
     bool closed_{false};
 };
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent, core::IAudioCapture* capture, IRecordingGuide* guide)
     : QMainWindow(parent),
-      impl_(std::make_unique<Impl>(this)) {
+      impl_(std::make_unique<Impl>(this, capture, guide)) {
 }
 
 MainWindow::~MainWindow() = default;

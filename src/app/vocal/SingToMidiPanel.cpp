@@ -19,9 +19,10 @@
 #include <cmath>
 
 namespace hum::app::vocal {
-SingToMidiPanel::SingToMidiPanel(QWidget* parent, core::IAudioCapture* capture)
+SingToMidiPanel::SingToMidiPanel(QWidget* parent, core::IAudioCapture* capture, IRecordingGuide* guide)
     : QDialog(parent), capture_(this), active_capture_(capture ? capture : &capture_),
-      recorder_(*active_capture_), preview_playback_(this) {
+      armed_capture_(*active_capture_), recorder_(armed_capture_), guide_player_(this),
+      guide_(guide ? guide : &guide_player_), preview_playback_(this) {
     setObjectName(QStringLiteral("singToMidiPanel"));
     setWindowTitle(QStringLiteral("Sing to MIDI — Piano Roll"));
     setWindowModality(Qt::ApplicationModal);
@@ -29,7 +30,7 @@ SingToMidiPanel::SingToMidiPanel(QWidget* parent, core::IAudioCapture* capture)
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(22, 18, 22, 18); layout->setSpacing(10);
     auto* title = new QLabel(QStringLiteral("Sing to MIDI"), this);
     title->setStyleSheet(QStringLiteral("font-size: 24px; font-weight: 600;")); layout->addWidget(title);
-    auto* hint = new QLabel(QStringLiteral("A separate local neural vocal engine. Record → convert → preview → insert."), this);
+    auto* hint = new QLabel(QStringLiteral("Four count-in beats, then sing along with your tracks. Use headphones."), this);
     hint->setWordWrap(true); layout->addWidget(hint);
     origin_label_ = new QLabel(this); origin_label_->setWordWrap(true); layout->addWidget(origin_label_);
     auto* input = new QHBoxLayout;
@@ -81,13 +82,9 @@ SingToMidiPanel::SingToMidiPanel(QWidget* parent, core::IAudioCapture* capture)
         button->setStyleSheet(QStringLiteral("QPushButton { padding: 5px 12px; border: 1px solid #b9c8d0; border-radius: 5px; background: #f7fafb; color: #243843; } QPushButton:disabled { color: #8c989f; background: #f1f3f4; } QPushButton:hover:enabled { background: #e1f0f5; }"));
     }
     connect(close, &QPushButton::clicked, this, &SingToMidiPanel::reject);
-    connect(refresh, &QPushButton::clicked, this, [this] { if (!recorder_.recording() && !requesting_permission_) { refreshDevices(); } });
+    connect(refresh, &QPushButton::clicked, this, [this] { if (!recorder_.recording() && !guide_->active() && !requesting_permission_) { refreshDevices(); } });
     connect(record_, &QPushButton::clicked, this, [this] { record(); });
-    connect(stop_, &QPushButton::clicked, this, [this] {
-        recorder_.stop();
-        status_->setText(recorder_.audio() ? QStringLiteral("Take captured. Convert it to preview notes before insertion.")
-            : QStringLiteral("No audio arrived. Check the microphone and record again.")); tick();
-    });
+    connect(stop_, &QPushButton::clicked, this, [this] { stopTake(); });
     connect(discard_, &QPushButton::clicked, this, [this] { discard(); });
     connect(cancel_, &QPushButton::clicked, this, [this] {
         cancelConversion(); status_->setText(QStringLiteral("Conversion cancelled. The take is available to try again.")); updateControls();
@@ -114,27 +111,30 @@ SingToMidiPanel::SingToMidiPanel(QWidget* parent, core::IAudioCapture* capture)
     connect(scale_snap_, &QCheckBox::toggled, this, settings_changed);
     connect(quantize_, &QComboBox::currentIndexChanged, this, settings_changed);
     connect(&timer_, &QTimer::timeout, this, [this] { tick(); });
-    capture_.setDevicesChangedCallback([this] { if (!recorder_.recording()) { refreshDevices(); } });
+    capture_.setDevicesChangedCallback([this] { if (!recorder_.recording() && !guide_->active()) { refreshDevices(); } });
     timer_.start(50); setOrigin(0); refreshDevices(); updateControls();
 }
 SingToMidiPanel::~SingToMidiPanel() {
-    capture_.setDevicesChangedCallback({}); cancelConversion(); recorder_.discard(); preview_playback_.stop();
+    capture_.setDevicesChangedCallback({}); guide_->stop(); armed_capture_.stop(); cancelConversion(); recorder_.discard(); preview_playback_.stop();
     for (auto* child : children()) {
         if (auto* watcher = dynamic_cast<QFutureWatcher<hum::vocal::ConversionResult>*>(child)) { watcher->waitForFinished(); }
     }
 }
 void SingToMidiPanel::setHost(std::function<HostContext()> context,
-    std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::uint64_t)> insert) {
+    std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::uint64_t)> insert,
+    std::function<void()> prepare_recording, std::function<void(double)> transport_position) {
+    prepare_recording_ = std::move(prepare_recording);
+    transport_position_ = std::move(transport_position);
     context_ = std::move(context); insert_callback_ = std::move(insert); updateControls();
 }
 void SingToMidiPanel::setOrigin(double seconds) {
-    origin_ = std::isfinite(seconds) ? std::clamp(seconds, 0.0, 570.0) : 0;
+    origin_ = std::isfinite(seconds) ? std::clamp(seconds, 0.0, 600.0) : 0;
     origin_label_->setText(QStringLiteral("Recording origin: %1 s · first audio sample aligns here · up to 30 seconds per take.").arg(origin_, 0, 'f', 2));
 }
 void SingToMidiPanel::reject() { discard(); QDialog::reject(); }
 void SingToMidiPanel::discard() {
     ++permission_generation_; requesting_permission_ = false; cancelConversion();
-    recorder_.discard(); preview_playback_.stop(); result_ = {}; preview_notes_.clear(); inserted_ = false;
+    guide_->stop(); recorder_.discard(); armed_capture_.stop(); preview_playback_.stop(); result_ = {}; preview_notes_.clear(); inserted_ = false;
     preview_->setNotes({}, {}, origin_, 120); progress_->setValue(0);
     status_->setText(QStringLiteral("Take discarded. Existing notes are unchanged.")); tick();
 }
@@ -149,7 +149,7 @@ void SingToMidiPanel::refreshDevices() {
     updateControls();
 }
 void SingToMidiPanel::record() {
-    if (requesting_permission_ || recorder_.recording() || converting_) { return; }
+    if (requesting_permission_ || guide_->active() || recorder_.recording() || converting_) { return; }
     if (active_capture_->permissionStatus() != core::PermissionStatus::granted) {
         requesting_permission_ = true; const auto generation = ++permission_generation_;
         updateControls(); QPointer<SingToMidiPanel> safe(this);
@@ -161,15 +161,49 @@ void SingToMidiPanel::record() {
         }); return;
     }
     preview_playback_.stop();
+    const auto error = armed_capture_.arm(devices_->currentData().toString().toStdString());
+    if (error != core::ServiceStatus::ok) { reportCaptureError(error); updateControls(); return; }
+    if (prepare_recording_) { prepare_recording_(); }
+    take_context_ = context_ ? context_() : HostContext{};
+    if (context_) { setOrigin(take_context_.origin); }
+    auto plan = core::makeOverdubPlan(take_context_.backing_notes, take_context_.backing_voices,
+        origin_, take_context_.bpm, take_context_.recording_click);
+    if (!plan) {
+        armed_capture_.stop(); status_->setText(QStringLiteral("Choose a playhead position before 570 seconds and try again."));
+        updateControls(); return;
+    }
+    status_->setText(QStringLiteral("Preparing four count-in beats… Recording starts after beat 4."));
+    plan->voice_clips = take_context_.voice_clips;
+    guide_->start(*plan, {
+        [this](double origin) { beginCapture(origin); },
+        [this](int beat, double position) {
+            if (transport_position_) { transport_position_(position); }
+            if (beat > 0) { status_->setText(QStringLiteral("Count in: %1 / 4 — get ready…").arg(beat)); }
+        },
+        [this](const QString& error) {
+            stopTake(); if (!error.isEmpty()) { status_->setText(error); }
+        }});
+    updateControls();
+}
+void SingToMidiPanel::beginCapture(double origin) {
+    setOrigin(origin);
     const auto error = recorder_.start(devices_->currentData().toString().toStdString());
-    if (error != core::ServiceStatus::ok) { reportCaptureError(error); }
-    else {
-        take_context_ = context_ ? context_() : HostContext{};
-        if (context_) { setOrigin(take_context_.origin); }
-        result_ = {}; preview_notes_.clear(); inserted_ = false; preview_->setNotes({}, {}, origin_, take_context_.bpm);
-        status_->setText(QStringLiteral("Recording locally… Sing one melody, then press Stop."));
+    if (error != core::ServiceStatus::ok) {
+        guide_->stop(); armed_capture_.stop(); reportCaptureError(error);
+    } else {
+        result_ = {}; preview_notes_.clear(); inserted_ = false;
+        preview_->setNotes({}, {}, origin_, take_context_.bpm);
+        status_->setText(QStringLiteral("Recording with the arrangement… Sing one melody, then press Stop."));
     }
     updateControls();
+}
+void SingToMidiPanel::stopTake() {
+    const auto captured = recorder_.recording();
+    guide_->stop(); recorder_.stop(); armed_capture_.stop();
+    status_->setText(!captured ? QStringLiteral("Count-in cancelled. No new take was recorded.")
+        : recorder_.audio() ? QStringLiteral("Take captured. Convert it to preview notes before insertion.")
+        : QStringLiteral("No audio arrived. Check the microphone and record again."));
+    tick();
 }
 hum::vocal::Config SingToMidiPanel::config() const {
     return hum::vocal::Config::forPreset(static_cast<hum::vocal::Preset>(preset_->currentIndex()));
@@ -217,7 +251,7 @@ void SingToMidiPanel::updatePreview(bool resegment) {
         correction.scale_pitch_classes.clear();
         for (const auto interval : host.scale.intervals) { correction.scale_pitch_classes.push_back((host.scale.root_pitch_class + interval) % 12); }
         preview_notes_ = hum::vocal::correct(result_.notes, correction);
-        preview_->setNotes(preview_notes_, host.reference_notes, origin_, host.bpm);
+        preview_->setNotes(preview_notes_, take_context_.reference_notes, origin_, host.bpm);
         auto message = preview_notes_.empty() ? QStringLiteral("No confident melody found. Try a clear single voice closer to the microphone.")
             : QStringLiteral("%1 notes ready for Track %2 · %3. Adjust the preview or insert when ready.")
                 .arg(preview_notes_.size()).arg(host.track + 1).arg(QString::fromLatin1(core::instrumentVoiceName(host.instrument)));
@@ -231,6 +265,7 @@ void SingToMidiPanel::updatePreview(bool resegment) {
 void SingToMidiPanel::playPreview() {
     if (preview_playback_.isPlaying() || preview_playback_.isPreparing()) { preview_playback_.stop(); updateControls(); return; }
     if (preview_notes_.empty() || converting_ || recorder_.recording()) { return; }
+    if (prepare_recording_) { prepare_recording_(); }
     const auto host = context_ ? context_() : take_context_;
     preview_playback_.play(PianoRollInsertAdapter::timedNotes(preview_notes_), [this](const QString& message, bool error) {
         if (error) { status_->setText(message); } updateControls();
@@ -238,8 +273,12 @@ void SingToMidiPanel::playPreview() {
     updateControls();
 }
 void SingToMidiPanel::tick() {
+    if (guide_->active() && armed_capture_.error() != core::ServiceStatus::ok) {
+        const auto error = armed_capture_.error(); stopTake(); reportCaptureError(error); return;
+    }
     const auto was_recording = recorder_.recording(); recorder_.poll();
     if (was_recording && !recorder_.recording()) {
+        guide_->stop(); armed_capture_.stop();
         if (recorder_.error() != core::ServiceStatus::ok) { reportCaptureError(recorder_.error()); }
         else { status_->setText(QStringLiteral("30-second take captured. Ready to convert.")); }
     }
@@ -251,9 +290,9 @@ void SingToMidiPanel::tick() {
     updateControls();
 }
 void SingToMidiPanel::updateControls() {
-    const auto active = recorder_.recording() || requesting_permission_;
+    const auto active = recorder_.recording() || guide_->active() || requesting_permission_;
     devices_->setEnabled(!active && !converting_); record_->setEnabled(!active && !converting_ && devices_->count() > 0);
-    stop_->setEnabled(recorder_.recording()); discard_->setEnabled(active || converting_ || bool(recorder_.audio()));
+    stop_->setEnabled(recorder_.recording() || guide_->active()); discard_->setEnabled(active || converting_ || bool(recorder_.audio()));
     convert_->setEnabled(!active && !converting_ && recorder_.audio() && recorder_.audio()->duration() >= .15);
     cancel_->setEnabled(converting_);
     preset_->setEnabled(!active && !converting_ && !inserted_); scale_snap_->setEnabled(!active && !converting_ && !inserted_);

@@ -75,6 +75,7 @@ bool ProjectDocument::isValid() const noexcept {
         && rhythm_snap.isValid()
         && (grid_division == 0 || grid_division == 4 || grid_division == 8
             || grid_division == 16 || grid_division == 32 || grid_division == 64)
+        && lyrics.size() <= 1024U * 1024U && validVoiceClips(voice_clips)
         && canonical_notes.size() <= kMaximumProjectNotes
         && track_count > 0 && track_count <= 16
         && (tracks.empty() || (tracks.size() == track_count
@@ -103,7 +104,7 @@ std::optional<std::string> ProjectFileCodec::encode(const ProjectDocument& proje
            << "rhythm_snap_seconds " << project.rhythm_snap.interval_seconds << '\n'
            << "metronome_enabled " << (project.metronome_enabled ? 1 : 0) << '\n'
            << "grid_division " << project.grid_division << '\n'
-           << "audio_storage omitted\n"
+           << "audio_storage embedded_voice\n"
            << "note_count " << project.canonical_notes.size() << '\n';
     for (const auto& note : project.canonical_notes) {
         output << "note "
@@ -126,12 +127,25 @@ std::optional<std::string> ProjectFileCodec::encode(const ProjectDocument& proje
         for (const auto index : region.note_indices) { output << ' ' << index; }
         output << '\n';
     }
+    output << "lyrics " << std::quoted(project.lyrics) << '\n';
+    output << "voice_count " << project.voice_clips.size() << '\n';
+    constexpr char hex[] = "0123456789abcdef";
+    for (const auto& clip : project.voice_clips) {
+        output << "voice " << std::quoted(clip.name) << ' ' << clip.start_seconds << ' '
+               << clip.sample_rate << ' ' << clip.muted << ' ' << clip.samples.size() << ' ';
+        for (const auto sample : clip.samples) {
+            const auto bits = static_cast<std::uint16_t>(sample);
+            for (int shift = 12; shift >= 0; shift -= 4) output << hex[(bits >> shift) & 15];
+        }
+        output << '\n';
+    }
     output << "end\n";
     return output.str();
 }
 
 ProjectDecodeResult ProjectFileCodec::decode(const std::string_view bytes) {
     try {
+        if (bytes.size() > 64U * 1024U * 1024U) return corrupt("Project exceeds 64 MiB.");
         std::istringstream input{std::string(bytes)};
         std::string magic;
         std::uint64_t version = 0;
@@ -182,7 +196,7 @@ ProjectDecodeResult ProjectFileCodec::decode(const std::string_view bytes) {
         const auto parsed_mode = parseMode(mode);
         if (!parsed_mode || ticks > std::numeric_limits<std::uint16_t>::max()
             || root > std::numeric_limits<std::uint8_t>::max()
-            || magnet > 1 || snap_enabled > 1 || audio_storage != "omitted"
+            || magnet > 1 || snap_enabled > 1 || audio_storage != (version >= 6 ? "embedded_voice" : "omitted")
             || note_count > kMaximumProjectNotes) {
             return corrupt("The project settings are invalid.");
         }
@@ -267,6 +281,29 @@ ProjectDecodeResult ProjectFileCodec::decode(const std::string_view bytes) {
                     region.note_indices.push_back(static_cast<std::size_t>(index));
                 }
                 project.playlist_regions.push_back(std::move(region));
+            }
+        }
+        if (version >= 6) {
+            std::size_t count = 0, total = 0;
+            if (!readKey(input, "lyrics") || !(input >> std::quoted(project.lyrics)) || project.lyrics.size() > 1024U * 1024U
+                || !readKey(input, "voice_count") || !(input >> count) || count > 16) return corrupt("Invalid lyrics or voice count.");
+            for (std::size_t i = 0; i < count; ++i) {
+                VoiceClip clip; std::size_t size = 0; unsigned muted = 0; std::string pcm;
+                if (!readKey(input, "voice") || !(input >> std::quoted(clip.name) >> clip.start_seconds >> clip.sample_rate >> muted >> size)
+                    || muted > 1 || size == 0 || size > kMaximumVoiceSamples - total) return corrupt("Invalid voice clip.");
+                if (!(input >> pcm) || pcm.size() != size * 4) return corrupt("Truncated voice audio.");
+                clip.muted = muted == 1; clip.samples.reserve(size); total += size;
+                for (std::size_t j = 0; j < pcm.size(); j += 4) {
+                    unsigned bits = 0;
+                    for (std::size_t k = 0; k < 4; ++k) {
+                        const auto c = pcm[j + k];
+                        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return corrupt("Invalid voice audio encoding.");
+                        bits = (bits << 4) | static_cast<unsigned>(c <= '9' ? c - '0' : c - 'a' + 10);
+                    }
+                    clip.samples.push_back(static_cast<std::int16_t>(bits < 32768 ? int(bits) : int(bits) - 65536));
+                }
+                if (!clip.valid()) return corrupt("Invalid voice timing or audio format.");
+                project.voice_clips.push_back(std::move(clip));
             }
         }
         std::string end;

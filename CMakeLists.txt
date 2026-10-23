@@ -19,6 +19,8 @@ add_library(hum_core STATIC
     src/core/midi_file.cpp
     src/core/note_editor.cpp
     src/core/note_extraction.cpp
+    src/core/voice_clip.cpp
+    src/core/overdub.cpp
     src/core/pitch.cpp
     src/core/project_file.cpp
     src/core/recording.cpp
@@ -52,6 +54,12 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    add_executable(hum_overdub_tests tests/overdub_tests.cpp)
+    target_include_directories(hum_overdub_tests PRIVATE src/app tests)
+    target_link_libraries(hum_overdub_tests PRIVATE HumToSing::core)
+    add_test(NAME hum_overdub_tests COMMAND hum_overdub_tests)
+    set_tests_properties(hum_overdub_tests PROPERTIES LABELS "core;recording;playback")
+
     add_executable(hum_vocal_capture_tests tests/vocal_capture_tests.cpp src/app/vocal/IsolatedMicRecorder.cpp)
     target_include_directories(hum_vocal_capture_tests PRIVATE src/app tests)
     target_link_libraries(hum_vocal_capture_tests PRIVATE HumToSing::core)
@@ -123,6 +131,7 @@ if(HUM_BUILD_GUI)
     endif()
 
     qt_add_executable(hum_to_sing
+        src/app/RecordingGuidePlayer.cpp
         src/app/vocal/IsolatedMicRecorder.cpp
         src/app/vocal/SingToMidiPanel.cpp
         src/app/vocal/VocalPreviewWidget.cpp
@@ -214,7 +223,21 @@ if(HUM_BUILD_GUI)
     )
 
     if(BUILD_TESTING)
+        get_target_property(HUM_APP_TEST_SOURCES hum_to_sing SOURCES)
+        list(FILTER HUM_APP_TEST_SOURCES INCLUDE REGEX "\\.cpp$")
+        list(FILTER HUM_APP_TEST_SOURCES EXCLUDE REGEX "(/main\\.cpp$|qrc_)")
+        add_executable(hum_overdub_ui_tests tests/overdub_ui_tests.cpp ${HUM_APP_TEST_SOURCES})
+        target_include_directories(hum_overdub_ui_tests PRIVATE src/app tests)
+        target_link_libraries(hum_overdub_ui_tests PRIVATE HumToSing::core hum_vocal Qt6::Widgets Qt6::Test Qt6::Multimedia Qt6::Concurrent)
+        if(APPLE)
+            target_link_libraries(hum_overdub_ui_tests PRIVATE hum_mac_instruments "-framework CoreAudio" "-framework AudioToolbox")
+        endif()
+        hum_bundle_vocal(hum_overdub_ui_tests)
+        add_test(NAME hum_overdub_ui_tests COMMAND hum_overdub_ui_tests)
+        set_tests_properties(hum_overdub_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;recording;playback" TIMEOUT 60)
+
         add_executable(hum_sing_to_midi_ui_tests tests/sing_to_midi_ui_tests.cpp
+            src/app/RecordingGuidePlayer.cpp
             src/app/vocal/SingToMidiPanel.cpp src/app/vocal/IsolatedMicRecorder.cpp
             src/app/vocal/VocalPreviewWidget.cpp src/app/vocal/PianoRollInsertAdapter.cpp
             src/app/QtAudioCapture.cpp src/app/QtMidiPlayback.cpp)

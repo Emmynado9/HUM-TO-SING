@@ -39,8 +39,8 @@ void testRoundTripPreservesCanonicalDocument() {
     const auto source = fixture();
     const auto encoded = hum::core::ProjectFileCodec::encode(source);
     expect(encoded.has_value(), "valid project encodes");
-    expect(encoded && encoded->find("audio_storage omitted") != std::string::npos,
-        "file explicitly records that original audio is omitted");
+    expect(encoded && encoded->find("audio_storage embedded_voice") != std::string::npos,
+        "file explicitly records embedded Playlist voice storage");
     const auto decoded = hum::core::ProjectFileCodec::decode(encoded.value_or(""));
     expect(static_cast<bool>(decoded), "encoded project decodes");
     if (!decoded) {
@@ -88,8 +88,8 @@ void testCorruptionAndVersionsFailClearly() {
         "unrecognized file is rejected as corrupt");
 
     auto encoded = *hum::core::ProjectFileCodec::encode(fixture());
-    encoded.replace(encoded.find("audio_storage omitted"),
-        std::string("audio_storage omitted").size(), "audio_storage promised_but_missing");
+    encoded.replace(encoded.find("audio_storage embedded_voice"),
+        std::string("audio_storage embedded_voice").size(), "audio_storage promised_but_missing");
     expect(!hum::core::ProjectFileCodec::decode(encoded),
         "unsupported audio-storage promise is not silently accepted");
 
@@ -117,9 +117,44 @@ void testInvalidValuesDoNotEncodeOrLoad() {
         "out-of-range MIDI pitch in a file is rejected");
 }
 
+void testSongwritingData() {
+    using namespace hum::core;
+    auto project = fixture();
+    project.lyrics = "[Verse]\nCafé — my \"song\"\n\\ repeat\n\n[Chorus]\n你好";
+    VoiceClip clip; clip.start_seconds = 2.125; clip.sample_rate = 8000; clip.muted = true;
+    clip.samples = {-32768, -1, 0, 1, 32767}; project.voice_clips = {clip};
+    const auto encoded = *ProjectFileCodec::encode(project);
+    const auto loaded = ProjectFileCodec::decode(encoded);
+    expect(loaded && loaded.project->lyrics == project.lyrics, "Unicode multiline lyrics, quotes and slashes round-trip");
+    expect(loaded && loaded.project->voice_clips[0].samples == clip.samples
+        && loaded.project->voice_clips[0].muted && loaded.project->voice_clips[0].start_seconds == 2.125,
+        "signed PCM16 samples, voice mute and timing round-trip exactly");
+    auto bad = encoded; bad.erase(bad.find("8000ffff000000017fff"), 1);
+    expect(!ProjectFileCodec::decode(bad), "truncated voice PCM is rejected");
+    bad = encoded; bad.replace(bad.find("voice_count 1"), 13, "voice_count 999");
+    expect(!ProjectFileCodec::decode(bad), "unbounded voice count is rejected");
+    auto legacy = *ProjectFileCodec::encode(fixture());
+    legacy.replace(legacy.find("PROJECT 6"), 9, "PROJECT 5");
+    legacy.replace(legacy.find("audio_storage embedded_voice"), std::string("audio_storage embedded_voice").size(), "audio_storage omitted");
+    legacy.erase(legacy.find("lyrics "), legacy.find("end\n") - legacy.find("lyrics "));
+    const auto old = ProjectFileCodec::decode(legacy);
+    expect(old && old.project->lyrics.empty() && old.project->voice_clips.empty(), "version 5 opens with blank lyrics and no voice audio");
+    project.lyrics.assign(1024U * 1024U + 1, 'x');
+    expect(!ProjectFileCodec::encode(project), "oversized lyrics cannot silently create an unreadable project");
+    clip.muted = false; clip.samples.assign(8000, 16384);
+    SynthRenderResult mix{{16000, 2}, {}, 0};
+    expect(mixVoiceClips(mix, {clip}, 2.625, 1), "voice mixes into an overdub window with resampling");
+    expect(mix.frameCount() == 8000 && std::abs(mix.interleaved_samples[100] - .5F) < .001,
+        "seek into sustained voice trims the beginning and preserves amplitude and duration");
+    clip.muted = true; SynthRenderResult silent{{16000, 2}, {}, 0};
+    expect(mixVoiceClips(silent, {clip}) && silent.interleaved_samples.empty(), "muted audio is excluded from playback and backing");
+    clip.muted = false; SynthRenderResult late{{192000, 2}, {}, 0}; clip.start_seconds = 599;
+    expect(!mixVoiceClips(late, {clip}), "oversized render fails safely before allocation");
+}
 } // namespace
 
 int main() {
+    testSongwritingData();
     testRoundTripPreservesCanonicalDocument();
     testCorruptionAndVersionsFailClearly();
     testInvalidValuesDoNotEncodeOrLoad();

@@ -3,6 +3,7 @@
 #include "hum/core/midi.hpp"
 #include "hum/core/note_editor.hpp"
 #include "hum/core/loop_range.hpp"
+#include "hum/core/overdub.hpp"
 
 #include <QObject>
 #include <QString>
@@ -22,8 +23,10 @@ public:
 
     void play(std::vector<core::TimedMidiNote> notes, StatusCallback callback,
         double start_seconds = 0.0, double tempo_bpm = 120.0, bool metronome = false,
-        std::vector<core::InstrumentVoice> voices = {}, std::optional<core::LoopRange> loop = std::nullopt);
+        std::vector<core::InstrumentVoice> voices = {}, std::optional<core::LoopRange> loop = std::nullopt,
+        std::vector<core::VoiceClip> voice_clips = {});
     void pause();
+    void playRecordingGuide(core::OverdubPlan plan, StatusCallback callback);
     void resume();
     void seek(double seconds);
     [[nodiscard]] bool isPaused() const noexcept;

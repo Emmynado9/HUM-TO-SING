@@ -38,22 +38,37 @@ struct PreparedMelody {
 [[nodiscard]] PreparedMelody prepareMelody(
     const std::vector<core::TimedMidiNote>& notes,
     const QAudioFormat& target_format, double tempo_bpm, bool metronome,
-    std::vector<core::InstrumentVoice> voices, const std::optional<core::LoopRange> loop) {
+    std::vector<core::InstrumentVoice> voices, const std::optional<core::LoopRange> loop,
+    const std::optional<core::OverdubPlan>& guide, const std::vector<core::VoiceClip>& voice_clips) {
     core::SimpleSynthConfig config;
     config.sample_rate_hz = static_cast<std::uint32_t>(target_format.sampleRate());
     config.channel_count = static_cast<std::uint16_t>(target_format.channelCount());
     config.tempo_bpm = tempo_bpm;
-    config.metronome_enabled = metronome;
+    config.metronome_enabled = metronome && voice_clips.empty();
     config.note_voices = std::move(voices);
     config.release_seconds = 1.2;
     if (notes.empty()) { config.release_seconds = 0.0; }
+    std::optional<core::SynthRenderResult> rendered;
+    if (notes.empty() && (guide || !voice_clips.empty())) {
+        rendered = core::SynthRenderResult{{config.sample_rate_hz, config.channel_count}, {}, 0};
+    } else {
 #ifdef __APPLE__
     std::string instrument_error;
-    auto rendered = audio::renderMacInstruments(notes, config, instrument_error);
+    rendered = audio::renderMacInstruments(notes, config, instrument_error);
     if (!rendered) { return {{}, {}, 0.0, QString::fromStdString(instrument_error)}; }
 #else
-    auto rendered = core::SimpleSynthRenderer{}.render(notes, config);
+    rendered = core::SimpleSynthRenderer{}.render(notes, config);
 #endif
+    }
+    if (rendered && !core::mixVoiceClips(*rendered, guide ? guide->voice_clips : voice_clips,
+        guide ? guide->origin : 0, guide ? guide->duration : 600)) {
+        return {{}, {}, 0, QStringLiteral("Voice audio exceeds the playback memory limit.")};
+    }
+    if (!guide && metronome && rendered && !voice_clips.empty()) {
+        for (std::size_t i = 0; i < rendered->interleaved_samples.size(); ++i)
+            rendered->interleaved_samples[i] += core::metronomeSample(double(i / config.channel_count) / config.sample_rate_hz, tempo_bpm);
+    }
+    if (guide && rendered) { rendered = core::recordingGuide(*rendered, *guide); }
     if (!rendered) {
         return {{}, {}, 0.0,
             QStringLiteral("The melody could not be rendered safely. Check its notes and duration.")};
@@ -136,12 +151,12 @@ public:
 
     void play(std::vector<core::TimedMidiNote> notes, QtMidiPlayback::StatusCallback callback,
         double start_seconds, double tempo_bpm, bool metronome, std::vector<core::InstrumentVoice> voices,
-        std::optional<core::LoopRange> loop) {
+        std::optional<core::LoopRange> loop, std::optional<core::OverdubPlan> guide = std::nullopt, std::vector<core::VoiceClip> voice_clips = {}) {
         stop();
         if (loop && !loop->isValid()) { if (callback) { callback(QStringLiteral("Invalid loop area."), true); } return; }
         loop_range_ = loop;
         start_offset_seconds_ = std::isfinite(start_seconds) ? std::clamp(start_seconds, 0.0, 600.0) : 0.0;
-        loop_ = loop.has_value() || (notes.empty() && metronome);
+        loop_ = loop.has_value() || (notes.empty() && voice_clips.empty() && !guide && metronome);
         if (loop && (start_offset_seconds_ < loop->start_seconds || start_offset_seconds_ >= loop->end_seconds)) {
             start_offset_seconds_ = loop->start_seconds;
         }
@@ -180,8 +195,8 @@ public:
                 impl->startPrepared(std::move(prepared));
             });
         watcher->setFuture(QtConcurrent::run(
-            [notes = std::move(notes), target_format, tempo_bpm, metronome, voices = std::move(voices), loop] {
-                return prepareMelody(notes, target_format, tempo_bpm, metronome, std::move(voices), loop);
+            [notes = std::move(notes), target_format, tempo_bpm, metronome, voices = std::move(voices), loop, guide = std::move(guide), voice_clips = std::move(voice_clips)] {
+                return prepareMelody(notes, target_format, tempo_bpm, metronome, std::move(voices), loop, guide, voice_clips);
             }));
     }
 
@@ -355,11 +370,16 @@ QtMidiPlayback::~QtMidiPlayback() {
 void QtMidiPlayback::play(
     std::vector<core::TimedMidiNote> notes,
     StatusCallback callback, double start_seconds, double tempo_bpm, bool metronome,
-    std::vector<core::InstrumentVoice> voices, std::optional<core::LoopRange> loop) {
-    impl_->play(std::move(notes), std::move(callback), start_seconds, tempo_bpm, metronome, std::move(voices), loop);
+    std::vector<core::InstrumentVoice> voices, std::optional<core::LoopRange> loop, std::vector<core::VoiceClip> voice_clips) {
+    impl_->play(std::move(notes), std::move(callback), start_seconds, tempo_bpm, metronome, std::move(voices), loop, std::nullopt, std::move(voice_clips));
 }
 
 void QtMidiPlayback::pause() { impl_->pause(); }
+void QtMidiPlayback::playRecordingGuide(core::OverdubPlan plan, StatusCallback callback) {
+    if (!plan.valid()) { if (callback) { callback(QStringLiteral("Invalid recording guide."), true); } return; }
+    auto notes = plan.notes; auto voices = plan.voices; const auto bpm = plan.bpm;
+    impl_->play(std::move(notes), std::move(callback), 0, bpm, false, std::move(voices), std::nullopt, std::move(plan));
+}
 void QtMidiPlayback::resume() { impl_->resume(); }
 void QtMidiPlayback::seek(double seconds) { impl_->seek(seconds); }
 bool QtMidiPlayback::isPaused() const noexcept { return impl_->isPaused(); }

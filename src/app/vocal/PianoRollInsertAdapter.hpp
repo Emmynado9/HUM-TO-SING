@@ -1,5 +1,6 @@
 #pragma once
 #include "hum/core/note_editor.hpp"
+#include "hum/core/voice_clip.hpp"
 #include "hum/vocal/transcription.hpp"
 
 namespace hum::app::vocal {
@@ -12,6 +13,10 @@ struct HostContext {
     core::ScaleDefinition scale;
     bool magnet{false}, muted{false};
     std::vector<hum::vocal::NoteEvent> reference_notes;
+    bool recording_click{false};
+    std::vector<core::VoiceClip> voice_clips;
+    std::vector<core::TimedMidiNote> backing_notes;
+    std::vector<core::InstrumentVoice> backing_voices;
 };
 
 class PianoRollInsertAdapter final {

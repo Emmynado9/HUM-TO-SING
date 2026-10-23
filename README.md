@@ -4,6 +4,8 @@ This repository contains the tested foundation of a local-first desktop applicat
 
 **Hum → Edit → Play → Export**
 
+Both recorders support **recording over existing tracks**, with a mandatory four-beat count-in at the project BPM. Backing tracks retain their instruments/mutes, and the new region starts at the capture position. See [overdub recording](docs/overdub-recording.md).
+
 The Piano Roll also offers **Sing to MIDI**, a separate offline neural alternative with its own recording session, Natural/Clean/Tight presets, temporary note preview, optional scale/time correction and one-step undoable insertion. The existing Hum → MIDI/YIN workflow remains available. The new Intel Mac backend requires macOS 13.3 or later. See [Sing to MIDI](docs/sing-to-midi.md) and its [verification and human-vocal results](docs/sing-to-midi-results.md).
 
 The Playlist now hosts multiple arrangement lanes with floating Hum → MIDI and Piano roll windows. The selected Playlist track is the only editable track in the piano roll; **Show other tracks** adds grey read-only references. Playlist controls change track type/instrument, mute, and delete with Undo. The piano roll includes group selection, Paint, Resize, Erase, Mute, Slice and Zoom tools. Playback offers pause/resume, seeking from either grid or ruler and an optional local metronome. Hum → MIDI also provides the click during recording, with BPM and beat display. The Playlist shows the speaker output and offers Test speakers. Select a loop area in either view or choose Loop all to repeat the arrangement. See [workspace controls](docs/playlist-workspace.md), [sampled instruments and progressions](docs/instruments-and-progressions.md), and [latest Mac verification](docs/track-editing-and-sustain-2026-10-18.md).
@@ -113,3 +115,9 @@ Overlapping notes remain independent events and are never silently deleted. The 
 See [docs/pitch-lab.md](docs/pitch-lab.md) for detector behavior, [docs/note-extraction.md](docs/note-extraction.md) for segmentation and MIDI rules, [docs/piano-roll.md](docs/piano-roll.md) for the editor contract, [docs/scale-guidance.md](docs/scale-guidance.md) for exact Magnet semantics, and [docs/project-files.md](docs/project-files.md) for persistence. This build environment has no audio device or native display session, so use the [single-track beta script](docs/mvp-beta-checklist.md) before making hardware or DAW claims.
 
 The repository does not yet declare a license for its own source. Choose one before distributing the application or accepting outside contributions. Dependency terms are recorded in [docs/dependencies-and-licenses.md](docs/dependencies-and-licenses.md).
+
+### Voice recordings and lyrics
+
+Use **Record voice** beside the Playlist controls to capture the actual vocal audio after four count-in beats, while existing tracks play. Press **Stop recording** to add a waveform lane. Right-click the voice lane to mute/unmute or delete it. Each take is limited to 30 seconds. Use headphones when overdubbing.
+
+Open **Lyrics** for a plain-text songwriting notepad. It stays available while the song plays; closing its window retains your writing. **Save project** (or Cmd+S in Lyrics) stores both lyrics and Playlist voice clips inside the local `.humproj` file. MIDI export still exports MIDI notes only. See [project files](docs/project-files.md).

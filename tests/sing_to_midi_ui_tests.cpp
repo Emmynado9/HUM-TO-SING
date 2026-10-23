@@ -14,6 +14,7 @@
 #include <numbers>
 #undef emit
 #include "support/FakeAudioCapture.hpp"
+#include "support/FakeRecordingGuide.hpp"
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
@@ -26,8 +27,11 @@ int main(int argc, char** argv) {
     int failures = 0;
     const auto expect = [&](bool value, const char* message) { if (!value) { ++failures; std::cerr << message << '\n'; } };
     hum::test::FakeAudioCapture microphone; microphone.device_format = {16'000, 1};
-    SingToMidiPanel panel(nullptr, &microphone);
+    hum::test::FakeRecordingGuide guide;
+    SingToMidiPanel panel(nullptr, &microphone, &guide);
     HostContext host; host.origin = 3.37; host.bpm = 123; host.ppq = 960; host.track = 1;
+    host.backing_notes = {{48,80,0,10,0},{60,80,4,2,0,true}};
+    host.backing_voices = {hum::core::InstrumentVoice::strings,hum::core::InstrumentVoice::grand_piano};
     host.instrument = hum::core::InstrumentVoice::acoustic_guitar;
     panel.setHost([&] { return host; }, {}); panel.setOrigin(host.origin); panel.show();
     const auto button = [&](const char* name) { return panel.findChild<QPushButton*>(QString::fromLatin1(name)); };
@@ -40,6 +44,16 @@ int main(int argc, char** argv) {
     auto* quantize = panel.findChild<QComboBox*>(QStringLiteral("vocalTimeQuantize")); quantize->setCurrentIndex(0);
     expect(!convert->isEnabled() && !insert->isEnabled(), "no conversion or insertion without a take");
     QTest::mouseClick(record, Qt::LeftButton);
+    expect(guide.active() && guide.plan.notes.size() == 1 && !convert->isEnabled(), "count-in snapshots audible backing without a take");
+    microphone.emit(std::vector<float>(32'000,.9F));
+    guide.advance(guide.plan.countInSeconds() - .01);
+    expect(!convert->isEnabled(), "fourth beat has not started capture");
+    QTest::mouseClick(stop, Qt::LeftButton);
+    expect(!microphone.isCapturing() && !convert->isEnabled(), "stop during count-in stores nothing");
+    QTest::mouseClick(record, Qt::LeftButton);
+    microphone.emit(std::vector<float>(32'000,.9F));
+    guide.advance(guide.plan.countInSeconds());
+    expect(microphone.start_count == 2, "each take opens hardware once, never again on downbeat");
     std::vector<float> audio(32'000);
     for (std::size_t i = 3'200; i < 28'800; ++i) {
         const auto phase = 2 * std::numbers::pi * 277.182631 * static_cast<double>(i) / 16'000;
@@ -109,8 +123,11 @@ int main(int argc, char** argv) {
     expect(convert->isEnabled(), "cancel keeps captured audio for retry");
     QTest::mouseClick(discard, Qt::LeftButton);
     expect(panel.previewNotes().empty() && !convert->isEnabled(), "discard releases take and preview");
-    QTest::mouseClick(record, Qt::LeftButton); microphone.fail(hum::core::ServiceStatus::device_disconnected);
+    QTest::mouseClick(record, Qt::LeftButton); guide.advance(guide.plan.countInSeconds()); microphone.fail(hum::core::ServiceStatus::device_disconnected);
     QTest::qWait(100); expect(!convert->isEnabled(), "disconnected capture cannot convert partial audio");
-    panel.reject(); expect(!microphone.isCapturing(), "closing panel releases microphone");
+    QTest::mouseClick(record, Qt::LeftButton); guide.fail();
+    expect(!guide.active() && !microphone.isCapturing(), "failed count-in output releases microphone and allows retry");
+    QTest::mouseClick(record, Qt::LeftButton);
+    panel.reject(); guide.advance(99); expect(!microphone.isCapturing(), "closing panel releases microphone");
     std::cout << "Sing to MIDI UI failures: " << failures << '\n'; return failures ? 1 : 0;
 }

@@ -9,7 +9,7 @@ namespace hum::app {
 
 namespace {
 
-constexpr qint64 kMaximumProjectBytes = 16 * 1024 * 1024;
+constexpr qint64 kMaximumProjectBytes = 64 * 1024 * 1024;
 
 } // namespace
 
@@ -21,7 +21,7 @@ ProjectLoadResult ProjectFileStore::load(const QString& path) {
     }
     if (file.size() < 0 || file.size() > kMaximumProjectBytes) {
         return {ProjectStoreStatus::too_large, std::nullopt,
-            QStringLiteral("The project is larger than the 16 MiB safety limit.")};
+            QStringLiteral("The project is larger than the 64 MiB safety limit.")};
     }
     const auto bytes = file.readAll();
     if (file.error() != QFileDevice::NoError) {

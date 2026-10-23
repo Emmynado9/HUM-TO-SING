@@ -1,9 +1,11 @@
 # Project files
 
-Hum-to-MIDI project files use the `.humproj` extension and schema version 5. Version 1 files remain readable as one phrase on Track 1; version 2 retains its arrangement lanes and regions, version 3 retains note mute/metronome settings, and version 4 retains track types and instruments. Versions 1–4 default track mute to OFF. Older files are upgraded only when explicitly saved. They are local, UTF-8 text documents with a fixed field order. The application saves them with `QSaveFile`, which writes a sibling temporary file and commits it as the destination only after all bytes are written.
+Hum-to-MIDI project files use the `.humproj` extension and schema version 6. Version 1 files remain readable as one phrase on Track 1; version 2 retains its arrangement lanes and regions, version 3 retains note mute/metronome settings, and version 4 retains track types and instruments. Versions 1–4 default track mute to OFF. Versions 1–5 load with blank lyrics and no voice clips. Older files are upgraded only when explicitly saved. They are local, UTF-8 text documents with a fixed field order. The application saves them with `QSaveFile`, which writes a sibling temporary file and commits it as the destination only after all bytes are written.
 
 Stored data:
 
+- UTF-8 lyrics, including line breaks and section headings;
+- Playlist voice clips: name, start time, mute, source sample rate, and embedded mono PCM16 audio;
 - canonical editable notes: MIDI pitch, velocity, channel, start seconds, duration seconds, and a reversible mute flag;
 - tempo in BPM and 480 ticks per quarter by default;
 - selected root and Major or Natural minor mode;
@@ -15,9 +17,11 @@ Stored data:
 
 The visible Magnet pitches are derived from canonical pitches after load and are not stored as a second melody. This prevents repeated key changes from compounding snap results.
 
-The line `audio_storage omitted` is mandatory. Original microphone audio, raw detector frames, and rendered preview audio remain in process memory only and are not embedded or referenced. Loading a project clears any session recording, and **Play original** remains disabled until the user makes a new recording. Closing the app releases session audio. Saving a project therefore preserves the editable musical sketch, not the source recording.
+Version 6 uses `audio_storage embedded_voice`. The **Record voice** button saves actual microphone audio as Playlist clips inside the same project file; no separate WAV files or cloud service are needed. Audio is stored as mono PCM16 (hex encoded), with the source sample rate retained. Voice takes are limited to 30 seconds, 16 clips, and 8,388,608 mono samples in total. Lyrics are limited to 1 MiB of UTF-8 text.
 
-The loader rejects malformed fields, invalid MIDI values, invalid timing, files over 16 MiB, unexpected trailing data, and unsupported schema versions. A failed load leaves the current project intact. A failed save leaves the previous destination intact where the platform supports the `QSaveFile` atomic replacement contract. Open and close prompt when editable project changes are unsaved. A new recording appends a converted region and retains existing notes and the current project path; only the latest original audio/raw analysis remain available in memory.
+Hum → MIDI and the separate neural Sing to MIDI workflow still keep their source recordings and analysis in session memory only. They save the resulting editable notes. Loading a project clears that temporary source take, so **Play original** stays disabled until a new take is recorded. Saved Playlist voices play through the main transport and are included in backing for subsequent recordings. MIDI export contains notes only; it cannot contain vocal audio or lyrics.
+
+The loader rejects malformed fields, invalid MIDI values, invalid timing, files over 64 MiB, unexpected trailing data, and unsupported schema versions. A failed load leaves the current project intact. A failed save leaves the previous destination intact where the platform supports the `QSaveFile` atomic replacement contract. Open and close prompt when editable project changes are unsaved. A new recording appends a converted region and retains existing notes and the current project path; only the latest Hum → MIDI source audio/raw analysis remain available in memory. Voice recording adds an independent audio clip without changing MIDI history.
 
 Tempo maps seconds to MIDI ticks:
 

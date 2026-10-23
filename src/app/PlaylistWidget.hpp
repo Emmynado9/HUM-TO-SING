@@ -1,6 +1,7 @@
 #pragma once
 #include "hum/core/note_editor.hpp"
 #include "hum/core/loop_range.hpp"
+#include "hum/core/voice_clip.hpp"
 #include <QAbstractScrollArea>
 #include <QRectF>
 #include <functional>
@@ -12,6 +13,9 @@ class PlaylistWidget final : public QAbstractScrollArea {
 public:
     explicit PlaylistWidget(core::NoteEditor& editor, QWidget* parent = nullptr);
     void refresh();
+    void setVoiceClips(const std::vector<core::VoiceClip>* clips,
+        std::function<void(std::size_t, bool)> edit);
+    [[nodiscard]] QRectF voiceViewportRect(std::size_t index) const;
     void setTempo(double bpm);
     void setHorizontalZoom(double pixels_per_second);
     void setRhythmSnap(core::RhythmSnap snap);
@@ -54,6 +58,8 @@ private:
     void updateDragPreview(const QPointF& position);
     void openSelectedRegion();
     void changed(core::NoteEditResult result);
+    const std::vector<core::VoiceClip>* voice_clips_{nullptr};
+    std::function<void(std::size_t, bool)> edit_voice_;
     core::NoteEditor& editor_;
     double tempo_bpm_{120.0}, pixels_per_second_{160.0};
     core::RhythmSnap rhythm_snap_{};

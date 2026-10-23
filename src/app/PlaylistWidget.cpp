@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QMenu>
 #include <QPainter>
 #include <QScrollBar>
 #include <QWheelEvent>
@@ -26,6 +27,15 @@ PlaylistWidget::PlaylistWidget(core::NoteEditor& editor, QWidget* parent)
     connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, [this] { viewport()->update(); });
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { viewport()->update(); });
     refresh();
+}
+void PlaylistWidget::setVoiceClips(const std::vector<core::VoiceClip>* clips, std::function<void(std::size_t, bool)> edit) {
+    voice_clips_ = clips; edit_voice_ = std::move(edit); refresh();
+}
+QRectF PlaylistWidget::voiceViewportRect(std::size_t index) const {
+    if (!voice_clips_ || index >= voice_clips_->size()) return {};
+    const auto& clip = (*voice_clips_)[index];
+    return {timeToX(clip.start_seconds), kRulerHeight + (editor_.trackCount() + index) * kLaneHeight + 12.0 - verticalScrollBar()->value(),
+        std::max(4.0, clip.duration() * pixels_per_second_), kLaneHeight - 24.0};
 }
 void PlaylistWidget::refresh() {
     if (selected_region_ && *selected_region_ >= editor_.regions().size()) { selected_region_.reset(); }
@@ -114,6 +124,7 @@ std::optional<double> PlaylistWidget::playheadViewportX() const {
 void PlaylistWidget::updateScrollRange() {
     double end = 0;
     for (const auto& note : editor_.notes()) { end = std::max(end, note.start_seconds + note.duration_seconds); }
+    if (voice_clips_) for (const auto& clip : *voice_clips_) end = std::max(end, clip.start_seconds + clip.duration());
     const auto bar = 240.0 / tempo_bpm_;
     const auto duration = std::max(4 * bar, (std::ceil(end / bar) + 1) * bar);
     const auto available = std::max(0, viewport()->width() - kTrackWidth);
@@ -122,7 +133,7 @@ void PlaylistWidget::updateScrollRange() {
         0.0, static_cast<double>(std::numeric_limits<int>::max()))));
     const auto height = std::max(0, viewport()->height() - kRulerHeight - kFooterHeight);
     verticalScrollBar()->setPageStep(height);
-    verticalScrollBar()->setRange(0, std::max(0, static_cast<int>(editor_.trackCount()) * kLaneHeight - height));
+    verticalScrollBar()->setRange(0, std::max(0, static_cast<int>(editor_.trackCount() + (voice_clips_ ? voice_clips_->size() : 0)) * kLaneHeight - height));
 }
 void PlaylistWidget::paintEvent(QPaintEvent*) {
     QPainter p(viewport()); p.setRenderHint(QPainter::Antialiasing);
@@ -147,6 +158,14 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
         const auto count = std::count_if(editor_.regions().begin(), editor_.regions().end(), [track](const auto& r) { return r.track == track; });
         p.drawText(QPoint(47, y + 82), QStringLiteral("%1 phrase region(s)").arg(count));
         p.setPen(QColor("#dedee1")); p.drawLine(0, y + kLaneHeight, viewport()->width(), y + kLaneHeight);
+    }
+    if (voice_clips_) for (std::size_t i = 0; i < voice_clips_->size(); ++i) {
+        const auto& clip = (*voice_clips_)[i]; const auto rect = voiceViewportRect(i);
+        p.fillRect(QRectF(0, rect.top() - 12, viewport()->width(), kLaneHeight), QColor("#f4f0f7"));
+        p.setPen(QColor("#604971"));
+        p.drawText(QRectF(16, rect.top() + 8, kTrackWidth - 24, 26), Qt::AlignLeft, QString::fromStdString(clip.name));
+        p.drawText(QPointF(16, rect.top() + 52), clip.muted ? QStringLiteral("Voice · MUTED") : QStringLiteral("Voice · recorded audio"));
+        p.drawText(QPointF(16, rect.top() + 73), QStringLiteral("Right-click: mute / delete"));
     }
     p.restore();
     p.save(); p.setClipRect(QRect(kTrackWidth, 0, viewport()->width() - kTrackWidth, viewport()->height() - kFooterHeight));
@@ -185,6 +204,23 @@ void PlaylistWidget::paintEvent(QPaintEvent*) {
             const auto y = preview.center().y() - (note.pitch - (low + high) / 2.0) * preview.height() / span;
             p.drawRoundedRect(QRectF(timeToX(note.start_seconds + delta), y,
                 std::max(2.0, note.duration_seconds * pixels_per_second_), 3), 1.5, 1.5);
+        }
+        p.restore();
+    }
+    if (voice_clips_) for (std::size_t i = 0; i < voice_clips_->size(); ++i) {
+        const auto& clip = (*voice_clips_)[i]; const auto rect = voiceViewportRect(i);
+        if (!rect.intersects(body)) continue;
+        p.setPen(QColor("#806090")); p.setBrush(QColor(clip.muted ? "#dedede" : "#e5d7ee")); p.drawRoundedRect(rect, 6, 6);
+        p.save(); p.setClipRect(rect, Qt::IntersectClip);
+        p.drawText(rect.adjusted(10, 4, -4, -4), Qt::AlignTop, QString::fromStdString(clip.name));
+        const auto first = std::max(rect.left(), double(kTrackWidth));
+        const auto last = std::min(rect.right(), double(viewport()->width()));
+        for (double x = first; x < last; x += 2) {
+            const auto a = static_cast<std::size_t>(std::max(0.0, (x - rect.left()) / rect.width()) * clip.samples.size());
+            const auto b = std::min(clip.samples.size(), static_cast<std::size_t>((x + 2 - rect.left()) / rect.width() * clip.samples.size()) + 1);
+            int peak = 0; for (auto j = a; j < b; ++j) peak = std::max(peak, std::abs(int(clip.samples[j])));
+            const auto height = std::max(1.0, peak / 32768.0 * 24);
+            p.drawLine(QPointF(x, rect.center().y() + 10 - height), QPointF(x, rect.center().y() + 10 + height));
         }
         p.restore();
     }
@@ -240,6 +276,22 @@ void PlaylistWidget::setLoopChangedCallback(std::function<void(core::LoopRange)>
     loop_changed_ = std::move(callback);
 }
 void PlaylistWidget::mousePressEvent(QMouseEvent* event) {
+    const auto lane = std::floor((event->position().y() + verticalScrollBar()->value() - kRulerHeight) / kLaneHeight);
+    if (voice_clips_ && lane >= double(editor_.trackCount()) && lane < double(editor_.trackCount() + voice_clips_->size()) && event->position().y() >= kRulerHeight) {
+        const auto index = static_cast<std::size_t>(lane) - editor_.trackCount();
+        selected_region_.reset(); dragging_ = false;
+        if (event->button() == Qt::RightButton && edit_voice_) {
+            QMenu menu(this);
+            auto* mute = menu.addAction((*voice_clips_)[index].muted ? "Unmute voice" : "Mute voice");
+            auto* remove = menu.addAction("Delete voice recording");
+            const auto* action = menu.exec(event->globalPosition().toPoint());
+            if (action == mute || action == remove) edit_voice_(index, action == remove);
+        } else if (event->button() == Qt::LeftButton && event->position().x() >= kTrackWidth && seek_) {
+            seek_(std::clamp((event->position().x() - kTrackWidth + horizontalScrollBar()->value()) / pixels_per_second_, 0.0, 600.0));
+        }
+        if (selection_changed_) selection_changed_();
+        viewport()->update(); event->accept(); return;
+    }
     if (loop_tool_ && event->button() == Qt::LeftButton && event->position().x() >= kTrackWidth
         && event->position().y() < viewport()->height() - kFooterHeight) {
         setFocus(Qt::MouseFocusReason);
