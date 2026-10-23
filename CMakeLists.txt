@@ -15,6 +15,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 include(cmake/NeuralVocal.cmake)
 
 add_library(hum_core STATIC
+    src/core/generation_trial.cpp
     src/core/midi.cpp
     src/core/midi_file.cpp
     src/core/note_editor.cpp
@@ -37,6 +38,14 @@ if(HUM_VOCAL_BACKEND_AVAILABLE)
     set_target_properties(hum_vocal_fixture PROPERTIES OUTPUT_NAME HumVocalFixture)
 endif()
 
+add_executable(hum_generation_trial src/tools/GenerationTrialMain.cpp)
+target_link_libraries(hum_generation_trial PRIVATE HumToSing::core hum_vocal)
+set_target_properties(hum_generation_trial PROPERTIES OUTPUT_NAME HumGenerationTrial)
+if(HUM_VOCAL_BACKEND_AVAILABLE)
+    target_compile_definitions(hum_generation_trial PRIVATE HUM_TRIAL_NEURAL=1
+        HUM_VOCAL_MODEL_FILE="${CMAKE_SOURCE_DIR}/resources/vocal/swift-f0.onnx")
+endif()
+
 add_executable(hum_pitch_fixture src/tools/PitchFixtureMain.cpp)
 target_link_libraries(hum_pitch_fixture PRIVATE HumToSing::core)
 set_target_properties(hum_pitch_fixture PROPERTIES OUTPUT_NAME "HumPitchFixture")
@@ -54,6 +63,18 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(HUM_TRIAL_TEST_FLAGS "")
+        if(HUM_VOCAL_BACKEND_AVAILABLE)
+            set(HUM_TRIAL_TEST_FLAGS --neural)
+        endif()
+        add_test(NAME hum_generation_trial_tests COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/generation_trial_tests.py" $<TARGET_FILE:hum_generation_trial> ${HUM_TRIAL_TEST_FLAGS})
+        set_tests_properties(hum_generation_trial_tests PROPERTIES LABELS "core;generation;midi" TIMEOUT 90)
+    else()
+        message(STATUS "Python3 unavailable: AudioCraft trial contract tests are not registered")
+    endif()
     add_executable(hum_overdub_tests tests/overdub_tests.cpp)
     target_include_directories(hum_overdub_tests PRIVATE src/app tests)
     target_link_libraries(hum_overdub_tests PRIVATE HumToSing::core)

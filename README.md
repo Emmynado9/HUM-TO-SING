@@ -121,3 +121,7 @@ The repository does not yet declare a license for its own source. Choose one bef
 Use **Record voice** beside the Playlist controls to capture the actual vocal audio after four count-in beats, while existing tracks play. Press **Stop recording** to add a waveform lane. Right-click the voice lane to mute/unmute or delete it. Each take is limited to 30 seconds. Use headphones when overdubbing.
 
 Open **Lyrics** for a plain-text songwriting notepad. It stays available while the song plays; closing its window retains your writing. **Save project** (or Cmd+S in Lyrics) stores both lyrics and Playlist voice clips inside the local `.humproj` file. MIDI export still exports MIDI notes only. See [project files](docs/project-files.md).
+
+### Optional AudioCraft research trial
+
+The [voice-to-instrument trial](experiments/audiocraft/README.md) prepares an explicitly selected voice clip and automatic instrument/style prompt for an interactive free Colab experiment, then transcribes downloaded generated audio into MIDI locally. This is a separate noncommercial quality trial: cloud use is manual, the desktop app stays local, and real generation/listening quality is not yet verified.

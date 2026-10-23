@@ -6,3 +6,8 @@
 *.swp
 .DS_Store
 /aqtinstall.log
+
+# Private AudioCraft trial recordings and generated results
+/trial-data/
+__pycache__/
+.ipynb_checkpoints/

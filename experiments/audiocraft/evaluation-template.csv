@@ -1,0 +1,10 @@
+excerpt,instrument,instrument_accuracy,melodic_relevance,musical_usefulness,midi_corrections,generation_seconds,correction_minutes,notes
+sustain,piano,,,,,,,
+sustain,acoustic-guitar,,,,,,,
+sustain,flute,,,,,,,
+repeated-rests,piano,,,,,,,
+repeated-rests,acoustic-guitar,,,,,,,
+repeated-rests,flute,,,,,,,
+pitch-jumps,piano,,,,,,,
+pitch-jumps,acoustic-guitar,,,,,,,
+pitch-jumps,flute,,,,,,,
