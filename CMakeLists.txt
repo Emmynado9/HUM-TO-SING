@@ -261,11 +261,13 @@ if(HUM_BUILD_GUI)
 
         add_executable(hum_ai_trial_ui_tests tests/ai_trial_ui_tests.cpp
             src/app/AiTrialPanel.cpp src/app/QtAudioPlayback.cpp src/app/QtMidiPlayback.cpp
+            src/app/QtAudioCapture.cpp src/app/vocal/IsolatedMicRecorder.cpp
             src/app/vocal/VocalPreviewWidget.cpp src/app/vocal/PianoRollInsertAdapter.cpp)
         target_include_directories(hum_ai_trial_ui_tests PRIVATE src/app tests)
         target_link_libraries(hum_ai_trial_ui_tests PRIVATE HumToSing::core hum_vocal
             Qt6::Widgets Qt6::Test Qt6::Concurrent Qt6::Multimedia)
         if(APPLE)
+            target_sources(hum_ai_trial_ui_tests PRIVATE src/app/MacAudioInput.cpp)
             target_link_libraries(hum_ai_trial_ui_tests PRIVATE hum_mac_instruments "-framework CoreAudio" "-framework AudioToolbox")
         endif()
         hum_bundle_vocal(hum_ai_trial_ui_tests)

@@ -16,6 +16,8 @@
 #include <QTimer>
 #include <cmath>
 #include <iostream>
+#undef emit
+#include "support/FakeAudioCapture.hpp"
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv); std::cout << std::unitbuf;
@@ -30,7 +32,8 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < voice.samples.size(); ++i) voice.samples[i] = static_cast<std::int16_t>(9000 * std::sin(6.283185307179586 * 220 * double(i) / 16000));
     project.voice_clips.push_back(voice);
     hum::core::NoteEditor editor; static_cast<void>(editor.replaceAll(project.canonical_notes, project.playlist_regions, 1));
-    hum::app::AiTrialPanel panel;
+    hum::test::FakeAudioCapture capture; capture.device_format = {16000, 1};
+    hum::app::AiTrialPanel panel(nullptr, &capture);
     int inserted = 0, audio_added = 0; bool reject_host = false;
     panel.setHost([&](const auto& notes, double at, std::size_t track, std::uint64_t generation) -> QString {
         if (reject_host) return "The project changed.";
@@ -48,6 +51,24 @@ int main(int argc, char** argv) {
     const auto wait = [&] { QElapsedTimer clock; clock.start(); while (panel.busy() && clock.elapsed() < 15'000) QTest::qWait(10); check(!panel.busy(), "background import finishes"); };
     panel.setProject({}, 0, 2, 7); panel.show();
     check(!button("aiTrialExport")->isEnabled() && button("aiTrialImport")->isEnabled(), "empty projects guide users to record while allowing existing generated WAV import");
+    button("aiTrialRecordVoice")->click();
+    check(capture.isCapturing() && !button("aiTrialExport")->isEnabled() && !button("aiTrialImport")->isEnabled(), "AI Trial owns a recorder and locks export/import during capture");
+    capture.emit(std::vector<float>(1600, .2F)); button("aiTrialStopRecording")->click();
+    check(panel.findChild<QComboBox*>("aiTrialClip")->count() == 0, "short take does not create a source clip");
+    button("aiTrialRecordVoice")->click();
+    std::vector<float> take(160000); for (std::size_t i = 0; i < take.size(); ++i) take[i] = .25F * std::sin(6.283185307179586 * 220 * double(i) / 16000);
+    capture.emit(take); QTest::qWait(100);
+    check(!capture.isCapturing() && panel.findChild<QComboBox*>("aiTrialClip")->count() == 1
+        && button("aiTrialPlayVoice")->isEnabled(), "ten-second take automatically stops and becomes the selected playable source");
+    check(panel.prepareInDirectory(temporary.path()).isEmpty() && editor.notes().size() == 1 && audio_added == 0,
+        "new AI Trial recording exports without touching the project or Hum-to-MIDI notes");
+    button("aiTrialRecordVoice")->click(); capture.fail(hum::core::ServiceStatus::device_disconnected); QTest::qWait(100);
+    check(!capture.isCapturing() && panel.findChild<QComboBox*>("aiTrialClip")->count() == 1, "microphone disconnection preserves the previous take");
+    button("aiTrialRecordVoice")->click(); capture.emit(take); panel.reject(); QTest::qWait(100);
+    check(!capture.isCapturing() && panel.findChild<QComboBox*>("aiTrialClip")->count() == 1, "closing stops capture without accepting a partial take");
+    capture.permission = hum::core::PermissionStatus::denied; panel.show(); button("aiTrialRecordVoice")->click();
+    check(!capture.isCapturing() && button("aiTrialRecordVoice")->isEnabled(), "permission denial leaves recording retryable");
+    capture.permission = hum::core::PermissionStatus::granted;
     panel.setProject(project, 0, 2, 7);
     panel.findChild<QComboBox*>("aiTrialInstrument")->setCurrentIndex(2);
     panel.findChild<QComboBox*>("aiTrialStyle")->setCurrentIndex(1);

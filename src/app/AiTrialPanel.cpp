@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QProgressBar>
+#include <QPointer>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QScrollArea>
@@ -42,7 +43,9 @@ void writeFile(const QString& path, const QByteArray& bytes) {
         throw std::runtime_error("Could not save trial files. Choose a writable folder.");
 }
 }
-AiTrialPanel::AiTrialPanel(QWidget* parent) : QDialog(parent), audio_playback_(this), midi_playback_(this) {
+AiTrialPanel::AiTrialPanel(QWidget* parent, core::IAudioCapture* capture)
+    : QDialog(parent), capture_(this), active_capture_(capture ? capture : &capture_),
+      recorder_(*active_capture_, 10), audio_playback_(this), midi_playback_(this) {
     setObjectName("aiTrialPanel"); setWindowTitle("AI Trial — Voice to instrument");
     setWindowModality(Qt::ApplicationModal); resize(880, 780);
     auto* outer = new QVBoxLayout(this); outer->setContentsMargins(0, 0, 0, 0);
@@ -55,7 +58,7 @@ AiTrialPanel::AiTrialPanel(QWidget* parent) : QDialog(parent), audio_playback_(t
     auto* intro = new QLabel("Experimental · Personal, noncommercial use. Generate a creative interpretation in free Colab, then bring it back here. Nothing is uploaded automatically.", this);
     intro->setWordWrap(true); layout->addWidget(intro);
     auto* form = new QFormLayout;
-    clips_ = new QComboBox(this); clips_->setObjectName("aiTrialClip"); form->addRow("Recorded voice", clips_);
+    clips_ = new QComboBox(this); clips_->setObjectName("aiTrialClip"); clips_->setMinimumContentsLength(30); clips_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon); form->addRow("Recorded voice", clips_);
     auto* controls = new QHBoxLayout;
     instrument_ = new QComboBox(this); instrument_->setObjectName("aiTrialInstrument");
     instrument_->addItem("Piano", "piano"); instrument_->addItem("Acoustic guitar", "acoustic-guitar"); instrument_->addItem("Flute", "flute");
@@ -75,6 +78,29 @@ AiTrialPanel::AiTrialPanel(QWidget* parent) : QDialog(parent), audio_playback_(t
         auto* b = new QPushButton(QString::fromUtf8(text), this); b->setObjectName(QString::fromLatin1(name)); b->setAutoDefault(false);
         b->setMinimumHeight(34); b->setStyleSheet("QPushButton { padding: 5px 10px; border: 1px solid #b9c8d0; border-radius: 5px; background: white; color: #243843; } QPushButton:disabled { color: #909090; background: #eeeeee; }"); return b;
     };
+    auto* mic_row = new QHBoxLayout;
+    devices_ = new QComboBox(this); devices_->setObjectName("aiTrialMicrophone"); devices_->setAccessibleName("AI Trial microphone");
+    refresh_devices_ = button("Refresh microphones", "aiTrialRefreshMicrophones");
+    mic_row->addWidget(new QLabel("Microphone", this)); mic_row->addWidget(devices_, 1); mic_row->addWidget(refresh_devices_);
+    layout->insertLayout(2, mic_row);
+    auto* record_row = new QHBoxLayout;
+    record_ = button("● Record voice", "aiTrialRecordVoice"); stop_record_ = button("Stop recording", "aiTrialStopRecording");
+    play_voice_ = button("Listen to selected voice", "aiTrialPlayVoice");
+    record_row->addWidget(record_); record_row->addWidget(stop_record_); record_row->addWidget(play_voice_); layout->insertLayout(3, record_row);
+    recording_status_ = new QLabel("Record a new melody here (up to 10 seconds), or select a saved project voice below. Trial takes are temporary; save trial files to keep them.", this);
+    recording_status_->setWordWrap(true); recording_status_->setMinimumHeight(44); layout->insertWidget(4, recording_status_);
+    level_ = new QProgressBar(this); level_->setObjectName("aiTrialMicLevel"); level_->setRange(0, 100); level_->setValue(0); level_->setFormat("Microphone level %p%"); layout->insertWidget(5, level_);
+    connect(record_, &QPushButton::clicked, this, [this] { recordVoice(); });
+    connect(stop_record_, &QPushButton::clicked, this, [this] { finishVoice(); });
+    connect(refresh_devices_, &QPushButton::clicked, this, [this] { refreshDevices(); });
+    connect(play_voice_, &QPushButton::clicked, this, [this] {
+        const auto index = clips_->currentIndex(); if (index < 0) return;
+        const auto& clip = project_.voice_clips[static_cast<std::size_t>(index)];
+        std::vector<float> samples; samples.reserve(clip.samples.size());
+        for (const auto sample : clip.samples) samples.push_back(sample / 32768.0F);
+        stopPlayback(); audio_playback_.play(std::make_shared<core::AudioRecording>(core::AudioFormat{clip.sample_rate, 1}, std::move(samples)),
+            [this](const QString& message, bool error) { if (error) status_->setText(message); });
+    });
     auto* export_row = new QHBoxLayout;
     export_ = button("1. Save trial files…", "aiTrialExport"); folder_ = button("Show files", "aiTrialFolder");
     auto* colab = button("2. Open free Colab trial", "aiTrialColab");
@@ -146,11 +172,19 @@ AiTrialPanel::AiTrialPanel(QWidget* parent) : QDialog(parent), audio_playback_(t
         updateControls();
     });
     connect(&timer_, &QTimer::timeout, this, [this] {
+        if (recorder_.recording()) {
+            level_->setValue(static_cast<int>(recorder_.peak() * 100));
+            recording_status_->setText(QStringLiteral("Recording %1 / 10.0 s%2").arg(recorder_.elapsed(), 0, 'f', 1).arg(recorder_.clipped() ? " · Input clipping: sing more softly." : ""));
+            if (recorder_.limitReached() || recorder_.error() != core::ServiceStatus::ok) finishVoice();
+        }
         if (busy_ && progress_value_) progress_->setValue(static_cast<int>(progress_value_->load() * 100));
         preview_->setPlayhead(midi_playback_.isPlaying() ? midi_playback_.positionSeconds() : -1);
-    }); timer_.start(50); updateControls();
+    }); timer_.start(50); refreshDevices();
+    capture_.setDevicesChangedCallback([this] { if (!recorder_.recording() && !requesting_permission_) refreshDevices(); });
+    updateControls();
 }
 AiTrialPanel::~AiTrialPanel() {
+    capture_.setDevicesChangedCallback({});
     cancel();
     for (auto* child : children()) if (auto* watcher = dynamic_cast<QFutureWatcher<Imported>*>(child)) watcher->waitForFinished();
 }
@@ -160,13 +194,64 @@ void AiTrialPanel::setProject(core::ProjectDocument project, std::size_t track, 
     audio_.reset(); notes_.clear(); audio_added_ = midi_added_ = false; exported_directory_.clear();
     { const QSignalBlocker blocker(clips_); clips_->clear();
       for (std::size_t i = 0; i < project_.voice_clips.size(); ++i) clips_->addItem(QStringLiteral("%1 · %2 (%3 s)").arg(i + 1).arg(QString::fromStdString(project_.voice_clips[i].name)).arg(project_.voice_clips[i].duration(), 0, 'f', 2)); }
+    recording_status_->setText("Record a new melody here (up to 10 seconds), or select a saved project voice below. Trial takes are temporary; save trial files to keep them.");
+    refreshDevices(); duration_->setValue(8);
     offset_->setValue(0); progress_->setValue(0); preview_->setNotes({}, {}, 0, project_.tempo_bpm);
     const auto voice = track_ < project_.tracks.size() ? project_.tracks[track_].instrument : core::InstrumentVoice::grand_piano;
     destination_->setText(QStringLiteral("MIDI preview and insertion use Track %1 · %2. Generated audio keeps the AI instrument sound. Review the transcription before adding it.")
         .arg(track_ + 1).arg(QString::fromLatin1(core::instrumentVoiceName(voice))));
-    status_->setText(project_.voice_clips.empty() ? "No recorded voice clips yet. Close this screen and use Record voice in the Playlist, or import an existing generated WAV."
+    status_->setText(project_.voice_clips.empty() ? "No voice selected yet. Use Record voice above to record your melody here."
         : "Choose a voice clip and instrument. Save trial files to begin; your project is unchanged until you add a result.");
     refreshPrompt();
+}
+void AiTrialPanel::refreshDevices() {
+    const auto selected = devices_->currentData(); devices_->clear();
+    for (const auto& device : active_capture_->devices()) devices_->addItem(QString::fromStdString(device.name), QString::fromStdString(device.id));
+    const auto index = devices_->findData(selected); if (index >= 0) devices_->setCurrentIndex(index);
+    if (devices_->count() == 0) recording_status_->setText("No microphone found. Connect a microphone and click Refresh microphones.");
+    updateControls();
+}
+void AiTrialPanel::recordVoice() {
+    if (busy_ || recorder_.recording() || requesting_permission_) return;
+    stopPlayback();
+    if (active_capture_->permissionStatus() != core::PermissionStatus::granted) {
+        requesting_permission_ = true; const auto generation = ++permission_generation_;
+        updateControls(); QPointer<AiTrialPanel> safe(this);
+        active_capture_->requestPermission([safe, generation](core::PermissionStatus permission) {
+            if (!safe || safe->permission_generation_ != generation) return;
+            safe->requesting_permission_ = false;
+            if (permission == core::PermissionStatus::granted) safe->recordVoice();
+            else safe->recording_status_->setText("Microphone access is denied. Allow HumToSing in System Settings → Privacy & Security → Microphone, then try again.");
+            safe->updateControls();
+        });
+        return;
+    }
+    const auto result = recorder_.start(devices_->currentData().toString().toStdString());
+    recording_status_->setText(result == core::ServiceStatus::ok ? "Recording… Sing or hum your melody. Stops automatically after 10 seconds."
+        : "Could not start this microphone. Check the connection, refresh microphones and try again.");
+    updateControls();
+}
+void AiTrialPanel::finishVoice() {
+    if (!recorder_.recording()) return;
+    recorder_.stop(); level_->setValue(0);
+    const auto take = recorder_.audio();
+    if (recorder_.error() != core::ServiceStatus::ok) recording_status_->setText("Microphone recording failed or disconnected. Your previous voice selection is unchanged; reconnect and try again.");
+    else if (!take || take->duration() < .5) recording_status_->setText("That take was too short. Record at least half a second; your previous voice selection is unchanged.");
+    else {
+        const core::AudioRecording recording({take->sample_rate, 1}, take->samples);
+        auto clip = core::makeVoiceClip(recording, default_origin_);
+        if (!clip) recording_status_->setText("Could not prepare this take. Move the playhead earlier and try again.");
+        else {
+            clip->name = "AI Trial take " + std::to_string(project_.voice_clips.size() + 1);
+            project_.voice_clips.push_back(std::move(*clip));
+            const auto& saved = project_.voice_clips.back();
+            clips_->addItem(QStringLiteral("%1 (%2 s) · temporary").arg(QString::fromStdString(saved.name)).arg(saved.duration(), 0, 'f', 2));
+            clips_->setCurrentIndex(clips_->count() - 1); offset_->setValue(0); duration_->setValue(saved.duration());
+            recording_status_->setText("Take selected. Listen to it, choose an instrument, then save trial files and open Colab to generate the instrument. This take has not changed your project.");
+            exported_directory_.clear();
+        }
+    }
+    updateControls();
 }
 void AiTrialPanel::refreshPrompt() {
     core::trial::Request request; request.instrument = instrument_->currentData().toString().toStdString();
@@ -179,7 +264,7 @@ void AiTrialPanel::refreshPrompt() {
     updateControls();
 }
 QString AiTrialPanel::prepareInDirectory(const QString& parent) {
-    if (busy_) return "Wait for conversion to finish.";
+    if (busy_ || recorder_.recording() || requesting_permission_) return "Finish recording or conversion first.";
     QString created;
     try {
         core::trial::Request request; request.instrument = instrument_->currentData().toString().toStdString();
@@ -200,7 +285,7 @@ QString AiTrialPanel::prepareInDirectory(const QString& parent) {
     }
 }
 void AiTrialPanel::importGenerated(const QString& path) {
-    if (busy_) return;
+    if (busy_ || recorder_.recording() || requesting_permission_) return;
     const QFileInfo file(path);
     if (!file.isFile() || file.size() > 16 * 1024 * 1024) { status_->setText("Choose a WAV file no larger than 16 MiB."); return; }
     cancel(); audio_.reset(); notes_.clear(); audio_added_ = midi_added_ = false;
@@ -240,16 +325,22 @@ void AiTrialPanel::importGenerated(const QString& path) {
 }
 void AiTrialPanel::stopPlayback() { audio_playback_.stop(); midi_playback_.stop(); }
 void AiTrialPanel::cancel() {
+    ++permission_generation_; requesting_permission_ = false; recorder_.discard();
+    if (level_) level_->setValue(0);
     if (cancelled_) cancelled_->store(true);
     ++job_generation_; busy_ = false; stopPlayback(); updateControls();
 }
 void AiTrialPanel::reject() { cancel(); QDialog::reject(); }
 void AiTrialPanel::updateControls() {
     if (!export_) return;
-    for (auto* widget : {static_cast<QWidget*>(clips_), static_cast<QWidget*>(instrument_), static_cast<QWidget*>(style_), static_cast<QWidget*>(offset_), static_cast<QWidget*>(duration_), static_cast<QWidget*>(seed_), static_cast<QWidget*>(origin_)}) widget->setEnabled(!busy_);
-    export_->setEnabled(!busy_ && clips_->count() > 0); folder_->setEnabled(!exported_directory_.isEmpty());
-    import_->setEnabled(!busy_); cancel_->setEnabled(busy_);
-    play_audio_->setEnabled(!busy_ && bool(audio_)); play_midi_->setEnabled(!busy_ && !notes_.empty());
-    add_audio_->setEnabled(!busy_ && bool(audio_) && !audio_added_); add_midi_->setEnabled(!busy_ && !notes_.empty() && !midi_added_);
+    const bool locked = busy_ || recorder_.recording() || requesting_permission_;
+    devices_->setEnabled(!locked); refresh_devices_->setEnabled(!locked);
+    record_->setEnabled(!locked && devices_->count() > 0); stop_record_->setEnabled(recorder_.recording());
+    play_voice_->setEnabled(!locked && clips_->currentIndex() >= 0);
+    for (auto* widget : {static_cast<QWidget*>(clips_), static_cast<QWidget*>(instrument_), static_cast<QWidget*>(style_), static_cast<QWidget*>(offset_), static_cast<QWidget*>(duration_), static_cast<QWidget*>(seed_), static_cast<QWidget*>(origin_)}) widget->setEnabled(!locked);
+    export_->setEnabled(!locked && clips_->count() > 0); folder_->setEnabled(!exported_directory_.isEmpty());
+    import_->setEnabled(!locked); cancel_->setEnabled(busy_);
+    play_audio_->setEnabled(!locked && bool(audio_)); play_midi_->setEnabled(!locked && !notes_.empty());
+    add_audio_->setEnabled(!locked && bool(audio_) && !audio_added_); add_midi_->setEnabled(!locked && !notes_.empty() && !midi_added_);
 }
 }

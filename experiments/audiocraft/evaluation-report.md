@@ -52,3 +52,9 @@ The Intel Mac used for local checks has no compatible CUDA GPU. A suitable free 
 | Pitch jumps | Not run | Not run | Not run |
 
 Use the blank evaluation template; do not invent ratings. Recommend integration only after all nine cases are rated, with at least seven passing all audio criteria and at least seven requiring none/minor MIDI corrections. If generation or transcription fails this gate, report that failure and revise the approach.
+
+## Direct AI Trial recorder checks
+
+The direct microphone recorder uses its own capture session, with a ten-second limit and source playback. Baseline build and all 30 tests passed. Post-change checks cover short-take rejection, automatic stopping and selection, export without project mutation, disconnection recovery, permission denial and capture cancellation on close, using an injected synthetic microphone. Native Cocoa UI checks passed and the layout was inspected. Actual human microphone capture and cloud-generated instrument quality were not tested. Hum-to-MIDI source code and processing remain unchanged.
+
+Commands executed: the desktop CMake build and CTest commands above, plus `QT_QPA_PLATFORM=cocoa LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 build/macos-intel/bin/hum_ai_trial_ui_tests --native-screenshot`. Logs are `build/ai-recorder-baseline-build.log`, `build/ai-recorder-baseline-tests.log`, `build/ai-recorder-build.log`, `build/ai-recorder-tests.log`, and `build/ai-recorder-native.log`.

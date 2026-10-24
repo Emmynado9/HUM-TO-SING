@@ -125,3 +125,9 @@ An incomplete sheet returns `not_evaluated`. All nine rows must be complete. Int
 - [Current evaluation status](evaluation-report.md)
 
 Keep all audio, trial request/result metadata, filled ratings and downloaded weights outside Git. `trial-data/` and `build/` are ignored. Commit only code, clean notebooks, tests and anonymized written findings.
+
+### Recording directly in AI Trial
+
+Choose a microphone and click **Record voice** inside AI Trial. Sing or hum for 0.5–10 seconds, then press **Stop recording** (or let the ten-second limit stop it). The new take is selected automatically; use **Listen to selected voice** to check it. You can also select an existing project voice recording from the dropdown.
+
+These takes belong only to the trial screen and are cleared when it is reopened. Save trial files to retain a take before closing. Recording does not change Hum → MIDI or add anything to the Playlist. Choose an instrument and continue with **Save trial files → Open free Colab trial → Import generated WAV**. Recording does not start cloud generation or upload automatically.

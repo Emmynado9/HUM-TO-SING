@@ -3,6 +3,8 @@
 #include "hum/vocal/transcription.hpp"
 #include "QtAudioPlayback.hpp"
 #include "QtMidiPlayback.hpp"
+#include "QtAudioCapture.hpp"
+#include "vocal/IsolatedMicRecorder.hpp"
 #include <QDialog>
 #include <QTimer>
 #include <atomic>
@@ -19,7 +21,7 @@ namespace hum::app {
 namespace vocal { class VocalPreviewWidget; }
 class AiTrialPanel final : public QDialog {
 public:
-    explicit AiTrialPanel(QWidget* parent = nullptr);
+    explicit AiTrialPanel(QWidget* parent = nullptr, core::IAudioCapture* capture = nullptr);
     ~AiTrialPanel() override;
     void setProject(core::ProjectDocument project, std::size_t track, double playhead, std::uint64_t generation);
     void setHost(std::function<QString(const std::vector<hum::vocal::NoteEvent>&, double, std::size_t, std::uint64_t)> insert_midi,
@@ -32,10 +34,22 @@ public:
     [[nodiscard]] QString exportedDirectory() const { return exported_directory_; }
     void reject() override;
 private:
+    void refreshDevices();
+    void recordVoice();
+    void finishVoice();
     void refreshPrompt();
     void updateControls();
     void cancel();
     void stopPlayback();
+    QtAudioCapture capture_;
+    core::IAudioCapture* active_capture_;
+    vocal::IsolatedMicRecorder recorder_;
+    bool requesting_permission_{false};
+    std::uint64_t permission_generation_{0};
+    QComboBox* devices_{};
+    QPushButton *record_{}, *stop_record_{}, *refresh_devices_{}, *play_voice_{};
+    QProgressBar* level_{};
+    QLabel* recording_status_{};
     core::ProjectDocument project_;
     std::size_t track_{0};
     std::uint64_t project_generation_{0}, job_generation_{0};
