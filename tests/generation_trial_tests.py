@@ -6,11 +6,13 @@ import json
 import math
 from pathlib import Path
 import struct
+import shutil
 import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import wave
 
 TOOL = Path(sys.argv[1]).resolve()
@@ -20,6 +22,7 @@ sys.argv[1:] = []
 sys.path.insert(0, str(ROOT / "experiments/audiocraft"))
 import trial_runner as runner
 import evaluate
+import notebook_workflow as workflow
 
 
 def fixture(samples):
@@ -142,10 +145,88 @@ class TrialTests(unittest.TestCase):
                 compile(source, "notebook", "exec")
                 if source.startswith("RUNNER_SOURCE ="):
                     exec(source.splitlines()[0], namespace)
+                if source.startswith("WORKFLOW_SOURCE ="):
+                    exec(source.splitlines()[0], namespace)
                 if source.startswith("CONSTRAINTS ="):
                     exec(source.splitlines()[0], namespace)
         self.assertEqual(namespace["RUNNER_SOURCE"], (ROOT / "experiments/audiocraft/trial_runner.py").read_text())
+        self.assertEqual(namespace["WORKFLOW_SOURCE"], (ROOT / "experiments/audiocraft/notebook_workflow.py").read_text())
         self.assertEqual(namespace["CONSTRAINTS"], (ROOT / "experiments/audiocraft/constraints.txt").read_text())
+
+    def test_notebook_progress_and_failure_do_not_fake_success(self):
+        child = self.dir / "fake_runner.py"
+        output = self.dir / "result"
+        child.write_text("import sys,json,pathlib\nprint('HUM_PROGRESS '+json.dumps(dict(stage='generating',completed=2,total=4)),flush=True)\np=pathlib.Path(sys.argv[sys.argv.index('--output')+1]);p.mkdir();(p/'SUCCESS').touch()\n")
+        events = []
+        workflow.run_generation(sys.executable, child, "request", "guide", output, events.append)
+        self.assertTrue(any(e['completed'] == 2 and e['total'] == 4 for e in events))
+        self.assertEqual(events[-1]['stage'], 'complete')
+        self.assertGreaterEqual(events[-1]['elapsed'], 0)
+        child.write_text("raise SystemExit('No CUDA GPU')\n")
+        events.clear()
+        with self.assertRaisesRegex(RuntimeError, 'No CUDA GPU'):
+            workflow.run_generation(sys.executable, child, "request", "guide", self.dir / "failed", events.append)
+        self.assertFalse(any(e['stage'] == 'complete' for e in events))
+        child.write_text("print('HUM_PROGRESS {broken')\n")
+        with self.assertRaises(ValueError):
+            workflow.run_generation(sys.executable, child, "request", "guide", self.dir / "bad", events.append)
+
+    def test_notebook_interrupt_stops_child(self):
+        child = self.dir / "slow.py"
+        child.write_text("import time\nprint('loading',flush=True)\ntime.sleep(60)\n")
+        def interrupt(event):
+            raise KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            workflow.run_generation(sys.executable, child, "request", "guide", self.dir / "out", interrupt)
+
+    @unittest.skipUnless(shutil.which("node"), "Node not available for notebook browser transport simulation")
+    def test_browser_download_progress_and_truncation(self):
+        harness = r"""
+const fs = require('fs');
+const transfer = eval('(' + fs.readFileSync(0, 'utf8') + ')');
+let clicked = 0, ended = 0;
+global.document = {createElement: () => ({style: {}, append(){}, click(){clicked++;}}), body: {append(){}}};
+global.setTimeout = () => {};
+global.setInterval = () => 1;
+global.clearInterval = () => {ended++;};
+global.URL = {createObjectURL: () => 'blob:test', revokeObjectURL(){}};
+global.google = {colab: {kernel: {accessAllowed:true, comms:{open:async () => ({send(){}, async *messages(){}})}}}};
+const kernel = google.colab.kernel;
+kernel.comms.open = async () => ({send(){}, messages: (async function*(){yield {buffers:[new Uint8Array(3)]}; yield {buffers:[new Uint8Array(2)]};})()});
+(async () => {
+ const result = await transfer('id','result.zip',5);
+ if (result.bytes !== 5 || result.seconds < 0 || clicked !== 1 || ended !== 1) throw Error('invalid completed transfer');
+ try {await transfer('id','result.zip',6); throw Error('accepted truncated transfer');}
+ catch(e) {if (!e.message.includes('Download interrupted')) throw e;}
+ if (clicked !== 1 || ended !== 2) throw Error('failed transfer offered a download or leaked timer');
+})().catch(e => {console.error(e); process.exitCode=1;});
+"""
+        result = subprocess.run([shutil.which('node'), '-e', harness], input=workflow.DOWNLOAD_JS,
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_result_download_stream_and_cleanup(self):
+        archive = self.dir / "result.zip"
+        archive.write_bytes(b'x' * 600000)
+        targets, chunks, closed = {}, [], []
+        manager = SimpleNamespace(register_target=lambda key, fn: targets.update({key: fn}),
+                                  unregister_target=lambda key, fn: targets.pop(key))
+        callback = {}
+        comm = SimpleNamespace(send=lambda data, buffers: chunks.extend(buffers),
+                               close=lambda: closed.append(True),
+                               on_msg=lambda fn: callback.update(next=fn), on_close=lambda fn: None)
+        def evaluate(js, timeout_sec):
+            self.assertIn('result.zip', js)
+            self.assertEqual(timeout_sec, 600)
+            next(iter(targets.values()))(comm, None)
+            while not closed: callback['next'](None)
+            return dict(bytes=sum(map(len, chunks)), seconds=1)
+        with patch.dict(sys.modules, {'google.colab': SimpleNamespace(output=SimpleNamespace(eval_js=evaluate)),
+                                      'IPython': SimpleNamespace(get_ipython=lambda: SimpleNamespace(kernel=SimpleNamespace(comm_manager=manager)))}):
+            result = workflow.download_result(archive)
+        self.assertEqual(result['bytes'], 600000)
+        self.assertEqual(b''.join(chunks), archive.read_bytes())
+        self.assertFalse(targets)
 
     def test_evaluation_requires_nine_complete_real_ratings(self):
         template = ROOT / "experiments/audiocraft/evaluation-template.csv"

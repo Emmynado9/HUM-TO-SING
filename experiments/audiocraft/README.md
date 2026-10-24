@@ -6,11 +6,11 @@ The app now includes an **AI Trial** screen for this workflow; the `.humproj` sc
 
 ## Test from the desktop app
 
-1. Use **Record voice** in the Playlist to capture a source phrase. Select the MIDI track where you want the result's editable notes.
+1. Select the MIDI track where you want the result’s editable notes, then open **AI Trial** and use its **Record voice** button (or select an existing Playlist voice clip).
 2. Click **AI Trial** beside **Lyrics**. Select the recorded clip, instrument, optional style, excerpt start and length. The prompt is assembled automatically.
 3. Click **Save trial files…** and choose a folder. Each export creates a fresh subfolder containing only `guide.wav` and `request.json`; it never overwrites a prior trial or uploads files. **Show files** opens that folder.
-4. Click **Open free Colab trial**. In the browser, select a free GPU and run the notebook. Upload only the two files when asked. Download and unzip its result ZIP.
-5. Back in AI Trial, click **Import generated WAV…** and select `generated.wav`. Local conversion runs in the background and can be cancelled. Compare **Play generated audio** with **Play MIDI preview**.
+4. Click **Upload & generate in Colab ↗**. The app opens the notebook and your exported folder. Choose a free GPU and run the setup cells, then run **Upload → Generate → Download** using its ▶ button. Select both saved files together. Generation starts after validation and the result ZIP downloads automatically. Model loading, real generation-step progress, elapsed time, and result download progress appear in the notebook. Unzip the result ZIP.
+5. Back in AI Trial, click **Import Colab result WAV…** and select `generated.wav`. Local conversion runs in the background and can be cancelled. Compare **Play generated audio** with **Play MIDI preview**.
 6. Set **Insert at**, then choose **Add MIDI to selected track** or **Add generated audio**. You can add both for comparison, but mute one during playback. Save the project to retain inserted results.
 
 The insert position initially follows the selected source excerpt. MIDI preview uses the destination track's existing built-in instrument; generated audio preserves the actual requested AI sound, including flute. Adding MIDI does not change other notes or the track's instrument, and one Undo removes the inserted region. Generated audio uses the existing voice-clip storage and mute/delete controls. Duplicate clicks cannot insert the same preview twice. Closing cancels pending conversion; reopening starts a fresh trial, with exported/downloaded files left intact.
@@ -68,7 +68,7 @@ Open [the trial in Colab](https://colab.research.google.com/github/Emmynado9/HUM
 
 The notebook checks GPU availability before installation or upload. It creates an isolated Python 3.10 environment and installs AudioCraft at commit `896ec7c47f5e5d1e5aa1e4b260c4405328bf009d` with [compatibility constraints](constraints.txt). This avoids replacing Colab's notebook Python stack. The exact installed versions and resolved MusicGen model revision are recorded in each result.
 
-Upload exactly `request.json` and `guide.wav` from **one** prepared folder when asked. Inspect the printed prompt, run one generation, listen, and download the result ZIP. The ZIP contains:
+Run **Upload → Generate → Download** and upload exactly `request.json` and `guide.wav` from **one** prepared folder. The cell prints the prompt, generates one interpretation and downloads the result ZIP. Loading has an indeterminate bar; generation uses MusicGen’s actual completed/total steps. Downloading uses actual received bytes, elapsed time and an estimated remaining time. Completion means the result reached your browser; finish its save dialog if shown. If downloading fails, use **Download again** without regenerating. Keep the notebook open during transfer. The ZIP contains:
 
 - `generated.wav`: PCM16, 32-kHz mono generated audio;
 - `result.json`: prompt, controls, seed, model revision, guide hash, GPU, timings and output gain;
@@ -97,7 +97,7 @@ This invokes the existing neural engine with its natural preset. It does not qua
 - `midi-reference.wav`: the detected notes rendered with a **generic built-in tone**, for timing/pitch comparison rather than timbre comparison;
 - `transcription.json`: engine, preset, tempo, note count, processing time and `quality: unrated`.
 
-No notes, a missing neural runtime or invalid audio causes a clear failure. The source generated audio is never replaced. Instrument transcription is experimental: chords, unwanted accompaniment or expressive pitch movement can defeat the monophonic engine. Use a MIDI editor to assess correction effort; this trial does not add app MIDI/audio import controls.
+No notes, a missing neural runtime or invalid audio causes a clear failure. The source generated audio is never replaced. Instrument transcription is experimental: chords, unwanted accompaniment or expressive pitch movement can defeat the monophonic engine. Use a MIDI editor to assess correction effort; the app provides a preview before adding either version.
 
 ## 5. Evaluate all nine combinations
 
@@ -130,4 +130,8 @@ Keep all audio, trial request/result metadata, filled ratings and downloaded wei
 
 Choose a microphone and click **Record voice** inside AI Trial. Sing or hum for 0.5–10 seconds, then press **Stop recording** (or let the ten-second limit stop it). The new take is selected automatically; use **Listen to selected voice** to check it. You can also select an existing project voice recording from the dropdown.
 
-These takes belong only to the trial screen and are cleared when it is reopened. Save trial files to retain a take before closing. Recording does not change Hum → MIDI or add anything to the Playlist. Choose an instrument and continue with **Save trial files → Open free Colab trial → Import generated WAV**. Recording does not start cloud generation or upload automatically.
+These takes belong only to the trial screen and are cleared when it is reopened. Save trial files to retain a take before closing. Recording does not change Hum → MIDI or add anything to the Playlist. Choose an instrument and continue with **Save trial files → Upload & generate in Colab → Import Colab result WAV**. Recording does not start cloud generation or upload automatically.
+
+### Original hum versus generated result
+
+`guide.wav` is your original recording, used as melody conditioning; importing it back into the app only transcribes that original recording. Upload it **together with request.json in Colab**, then bring back **generated.wav** from the downloaded result ZIP. The desktop progress bar measures local MIDI transcription only. Free Colab runs interactively in the notebook, without an app-controlled backend.

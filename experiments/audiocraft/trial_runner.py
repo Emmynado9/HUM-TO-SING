@@ -69,11 +69,13 @@ def gpu_preflight(torch):
     return {"name": props.name, "total_memory_bytes": props.total_memory}
 
 
-def run(request_path, guide_path, output_dir):
+def run(request_path, guide_path, output_dir, progress=None):
+    report = progress or (lambda stage, completed, total: None)
     request = validate_request(request_path, guide_path)
     output = Path(output_dir)
     if output.exists():
         raise ValueError("Use a new output directory; previous results are never overwritten")
+    report("loading", 0, 0)
     import torch
     gpu = gpu_preflight(torch)
     import torchaudio
@@ -88,6 +90,7 @@ def run(request_path, guide_path, output_dir):
                                  allow_patterns=["state_dict.bin", "compression_state_dict.bin"])
     load_started = time.monotonic()
     model = MusicGen.get_pretrained(snapshot, device="cuda")
+    model.set_custom_progress_callback(lambda completed, total: report("generating", completed, total))
     # Seed after initialization so loading the model does not consume the sampling seed.
     torch.manual_seed(request["seed"])
     torch.cuda.manual_seed_all(request["seed"])
@@ -97,6 +100,7 @@ def run(request_path, guide_path, output_dir):
     load_seconds = time.monotonic() - load_started
     torch.cuda.synchronize()
     started = time.monotonic()
+    report("generating", 0, 0)
     with torch.inference_mode():
         result = model.generate_with_chroma([request["prompt"]], melody.unsqueeze(0), rate,
                                             progress=True)
@@ -123,6 +127,7 @@ def run(request_path, guide_path, output_dir):
                     generation_seconds=elapsed, load_seconds=load_seconds, output_gain=gain,
                     output_sample_rate=model.sample_rate, output_frames=result.shape[-1],
                     gpu=gpu, quality="unrated", sampling={"top_k": 250, "temperature": 1.0, "cfg_coef": 3.0})
+    report("saving", 0, 0)
     output.mkdir(parents=True, exist_ok=False)
     try:
         torchaudio.save(str(output / "generated.wav"), result, model.sample_rate,
@@ -134,6 +139,7 @@ def run(request_path, guide_path, output_dir):
         # Keep any partial output marked incomplete; never publish it as successful.
         (output / "INCOMPLETE").write_text("Output writing failed. Use a fresh result directory.\n")
         raise
+    report("complete", 1, 1)
     return metadata
 
 
@@ -142,8 +148,11 @@ if __name__ == "__main__":
     parser.add_argument("--request", required=True)
     parser.add_argument("--guide", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--progress-json", action="store_true")
     args = parser.parse_args()
     try:
-        run(args.request, args.guide, args.output)
+        def progress(stage, completed, total):
+            print("HUM_PROGRESS " + json.dumps(dict(stage=stage, completed=completed, total=total)), flush=True)
+        run(args.request, args.guide, args.output, progress if args.progress_json else None)
     except Exception as error:
         raise SystemExit("Trial stopped (no automatic retry or paid fallback): " + str(error))

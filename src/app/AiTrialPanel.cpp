@@ -103,16 +103,16 @@ AiTrialPanel::AiTrialPanel(QWidget* parent, core::IAudioCapture* capture)
     });
     auto* export_row = new QHBoxLayout;
     export_ = button("1. Save trial files…", "aiTrialExport"); folder_ = button("Show files", "aiTrialFolder");
-    auto* colab = button("2. Open free Colab trial", "aiTrialColab");
+    auto* colab = button("2. Upload & generate in Colab ↗", "aiTrialColab");
     export_row->addWidget(export_); export_row->addWidget(folder_); export_row->addWidget(colab); layout->addLayout(export_row);
-    auto* instructions = new QLabel("In Colab: choose a free GPU, run the cells, and upload only guide.wav + request.json from your saved folder. Download and unzip the result, then import generated.wav below. Free GPU availability is not guaranteed.", this);
+    auto* instructions = new QLabel("Generation happens in your browser: open Colab, choose a free GPU, run setup, then run Upload → Generate → Download and select guide.wav + request.json. Watch progress there. Unzip the downloaded result and import generated.wav below. Importing your original hum does not generate an instrument.", this);
     instructions->setWordWrap(true); layout->addWidget(instructions);
     auto* import_row = new QHBoxLayout;
-    import_ = button("3. Import generated WAV…", "aiTrialImport"); cancel_ = button("Cancel conversion", "aiTrialCancel");
+    import_ = button("3. Import Colab result WAV…", "aiTrialImport"); cancel_ = button("Cancel conversion", "aiTrialCancel");
     import_row->addWidget(import_); import_row->addWidget(cancel_); import_row->addStretch();
     origin_ = new QDoubleSpinBox(this); origin_->setObjectName("aiTrialOrigin"); origin_->setRange(0, 600); origin_->setDecimals(3); origin_->setSuffix(" s");
     import_row->addWidget(new QLabel("Insert at", this)); import_row->addWidget(origin_); layout->addLayout(import_row);
-    progress_ = new QProgressBar(this); progress_->setRange(0, 100); progress_->setValue(0); layout->addWidget(progress_);
+    progress_ = new QProgressBar(this); progress_->setToolTip("Local MIDI conversion only. Cloud generation and download progress appear in Colab."); progress_->setRange(0, 100); progress_->setValue(0); layout->addWidget(progress_);
     preview_ = new vocal::VocalPreviewWidget(this); preview_->setMinimumHeight(155); preview_->setAccessibleName("Generated instrument MIDI preview"); preview_->setToolTip("Detected notes from the generated audio. Add MIDI to edit them in the piano roll."); layout->addWidget(preview_, 1);
     destination_ = new QLabel(this); destination_->setWordWrap(true); destination_->setMinimumHeight(48); layout->addWidget(destination_);
     auto* result_row = new QHBoxLayout;
@@ -135,6 +135,8 @@ AiTrialPanel::AiTrialPanel(QWidget* parent, core::IAudioCapture* capture)
     });
     connect(folder_, &QPushButton::clicked, this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(exported_directory_)); });
     connect(colab, &QPushButton::clicked, this, [this] {
+        if (!exported_directory_.isEmpty()) QDesktopServices::openUrl(QUrl::fromLocalFile(exported_directory_));
+        status_->setText("In Colab, run setup and Upload → Generate → Download. Select both saved files. Generation and download progress appear in the notebook, not in this local MIDI conversion bar.");
         if (!QDesktopServices::openUrl(QUrl("https://colab.research.google.com/github/Emmynado9/HUM-TO-SING/blob/main/experiments/audiocraft/voice_to_instrument_trial.ipynb")))
             status_->setText("Could not open your browser. Open the AudioCraft trial notebook from the repository in Colab.");
     });
