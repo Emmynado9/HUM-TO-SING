@@ -124,4 +124,4 @@ Open **Lyrics** for a plain-text songwriting notepad. It stays available while t
 
 ### Optional AudioCraft research trial
 
-The [voice-to-instrument trial](experiments/audiocraft/README.md) prepares an explicitly selected voice clip and automatic instrument/style prompt for an interactive free Colab experiment, then transcribes downloaded generated audio into MIDI locally. This is a separate noncommercial quality trial: cloud use is manual, the desktop app stays local, and real generation/listening quality is not yet verified.
+Open **AI Trial** beside **Lyrics** to test the [voice-to-instrument workflow](experiments/audiocraft/README.md) inside the app. It prepares an explicitly selected voice clip and automatic instrument/style prompt for an interactive free Colab experiment, then imports downloaded generated audio, transcribes it locally, and lets you preview and add audio or editable MIDI to the Playlist. This is a separate noncommercial quality trial: cloud use is manual, the desktop app stays local, and real generation/listening quality is not yet verified.

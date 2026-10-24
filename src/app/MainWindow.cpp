@@ -1,4 +1,5 @@
 #include "MainWindow.hpp"
+#include "AiTrialPanel.hpp"
 
 #include "LevelMeter.hpp"
 #include "EditorToolbar.hpp"
@@ -154,6 +155,7 @@ public:
         closed_ = true;
         guide_->stop(); armed_capture_.stop();
         if (sing_panel_) { sing_panel_->reject(); }
+        if (ai_trial_panel_) { ai_trial_panel_->reject(); }
         monitor_.stop();
         capture_.setDevicesChangedCallback({});
         playback_.stop();
@@ -723,6 +725,35 @@ private:
         open_recorder_button_ = featureButton(QStringLiteral("Hum → MIDI"), QStringLiteral("openRecorderButton"), recording_dialog_);
         featureButton(QStringLiteral("Piano roll"), QStringLiteral("openPianoRollButton"), piano_dialog_);
         featureButton(QStringLiteral("Lyrics"), QStringLiteral("openLyricsButton"), lyrics_dialog_);
+        ai_trial_button_ = new QPushButton(QStringLiteral("AI Trial"), root);
+        ai_trial_button_->setObjectName(QStringLiteral("openAiTrialButton"));
+        ai_trial_button_->setToolTip(QStringLiteral("Prepare a voice-to-instrument trial, then preview and add a generated result."));
+        feature_toolbar->addWidget(ai_trial_button_);
+        QObject::connect(ai_trial_button_, &QPushButton::clicked, window_, [this] {
+            if (guide_->active() || recorder_.state() == core::RecordingState::recording || phrase_processor_.isBusy()) return;
+            const auto origin = midi_playback_.isPlaying() || midi_playback_.isPaused() ? midi_playback_.positionSeconds() : playback_start_seconds_;
+            stopMelodyPlayback(); playback_.stop(); cue_playback_.stop(); audition_playback_.stop();
+            if (!ai_trial_panel_) {
+                ai_trial_panel_ = new AiTrialPanel(window_);
+                ai_trial_panel_->setHost(
+                    [this](const std::vector<hum::vocal::NoteEvent>& notes, double at, std::size_t track, std::uint64_t generation) -> QString {
+                        if (closed_ || generation != vocal_project_generation_ || track >= note_editor_.trackCount())
+                            return QStringLiteral("The destination project changed. Reopen AI Trial for the current song.");
+                        const auto result = vocal::PianoRollInsertAdapter::insert(note_editor_, notes, at, track);
+                        if (result != core::NoteEditResult::applied) return QStringLiteral("The MIDI could not be inserted safely. Existing notes are unchanged.");
+                        markDirty(); piano_roll_->refresh(true); updateEditorUi(); updateUi(); return {};
+                    },
+                    [this](core::VoiceClip clip, std::uint64_t generation) -> QString {
+                        if (closed_ || generation != vocal_project_generation_)
+                            return QStringLiteral("The destination project changed. Reopen AI Trial for the current song.");
+                        auto candidate = voice_clips_; candidate.push_back(std::move(clip));
+                        if (!core::validVoiceClips(candidate)) return QStringLiteral("The project has reached its voice clip or audio storage limit.");
+                        voice_clips_ = std::move(candidate); markDirty(); playlist_->refresh(); updateEditorUi(); updateUi(); return {};
+                    });
+            }
+            ai_trial_panel_->setProject(currentProjectDocument(), playlist_->selectedTrack(), origin, vocal_project_generation_);
+            ai_trial_panel_->show(); ai_trial_panel_->raise(); ai_trial_panel_->activateWindow();
+        });
         feature_toolbar->addStretch();
         midi_play_button_ = new QPushButton(QStringLiteral("Play"), root);
         midi_play_button_->setObjectName(QStringLiteral("midiPlayButton"));
@@ -894,7 +925,7 @@ private:
             QProgressBar { background: #ededed; border: 0; border-radius: 5px; height: 10px; text-align: center; color: #555; }
             QProgressBar::chunk { background: #080808; border-radius: 5px; }
             QAbstractScrollArea { background: white; border: 1px solid #dedee1; border-radius: 9px; }
-            #openRecorderButton, #openPianoRollButton, #openLyricsButton, #recordVoiceButton, #lyricsSaveButton,
+            #openRecorderButton, #openPianoRollButton, #openLyricsButton, #openAiTrialButton, #recordVoiceButton, #lyricsSaveButton,
             #addTrackButton, #duplicateRegionButton, #deleteRegionButton,
             #playlistUndoButton, #playlistRedoButton {
                 background: white; color: #080808; border: 1px solid #cfcfcf;
@@ -1283,6 +1314,7 @@ private:
         cue_playback_.stop();
         phrase_processor_.cancel();
         if (sing_panel_) { sing_panel_->reject(); }
+        if (ai_trial_panel_) { ai_trial_panel_->reject(); }
         guide_->stop(); static_cast<void>(recorder_.stop()); armed_capture_.stop();
         ++vocal_project_generation_;
         applying_project_ = true;
@@ -2113,6 +2145,7 @@ private:
         open_recorder_button_->setText(recording_active
             ? QStringLiteral("●  Recording… open controls") : QStringLiteral("Hum → MIDI"));
         record_button_->setEnabled(can_record);
+        ai_trial_button_->setEnabled(!recording_active && !phrase_processor_.isBusy());
         stop_button_->setEnabled(recording_active);
         voice_record_button_->setText(recording_active ? QStringLiteral("Stop recording") : QStringLiteral("Record voice"));
         voice_record_button_->setEnabled(recording_active || (!phrase_processor_.isBusy() && state != core::RecordingState::closed));
@@ -2296,6 +2329,8 @@ private:
     QLabel* record_beat_label_{nullptr};
     QLabel* output_label_{nullptr};
     QPushButton* speaker_test_button_{nullptr};
+    AiTrialPanel* ai_trial_panel_{nullptr};
+    QPushButton* ai_trial_button_{nullptr};
     vocal::SingToMidiPanel* sing_panel_{nullptr};
     std::uint64_t vocal_project_generation_{0};
     double playback_start_seconds_{0.0};

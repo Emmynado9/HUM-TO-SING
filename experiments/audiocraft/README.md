@@ -2,7 +2,20 @@
 
 This is a personal, noncommercial MusicGen Melody experiment, separate from the desktop app. It tests creative interpretations of humming on **piano, acoustic guitar and flute**, followed by local transcription of the generated melody into MIDI. It does not promise faithful conversion, isolated instruments, accurate generated MIDI, exact tempo or real-time results.
 
-The app UI and `.humproj` schema are unchanged. The local tool never accesses the network. Only a manual upload in the interactive Colab notebook sends a selected excerpt to the cloud. No paid resources, accounts with billing, automatic model substitution or model training are required.
+The app now includes an **AI Trial** screen for this workflow; the `.humproj` schema is unchanged. The local command-line tool never accesses the network. Only a manual upload in the interactive Colab notebook sends a selected excerpt to the cloud. No paid resources, accounts with billing, automatic model substitution or model training are required.
+
+## Test from the desktop app
+
+1. Use **Record voice** in the Playlist to capture a source phrase. Select the MIDI track where you want the result's editable notes.
+2. Click **AI Trial** beside **Lyrics**. Select the recorded clip, instrument, optional style, excerpt start and length. The prompt is assembled automatically.
+3. Click **Save trial files…** and choose a folder. Each export creates a fresh subfolder containing only `guide.wav` and `request.json`; it never overwrites a prior trial or uploads files. **Show files** opens that folder.
+4. Click **Open free Colab trial**. In the browser, select a free GPU and run the notebook. Upload only the two files when asked. Download and unzip its result ZIP.
+5. Back in AI Trial, click **Import generated WAV…** and select `generated.wav`. Local conversion runs in the background and can be cancelled. Compare **Play generated audio** with **Play MIDI preview**.
+6. Set **Insert at**, then choose **Add MIDI to selected track** or **Add generated audio**. You can add both for comparison, but mute one during playback. Save the project to retain inserted results.
+
+The insert position initially follows the selected source excerpt. MIDI preview uses the destination track's existing built-in instrument; generated audio preserves the actual requested AI sound, including flute. Adding MIDI does not change other notes or the track's instrument, and one Undo removes the inserted region. Generated audio uses the existing voice-clip storage and mute/delete controls. Duplicate clicks cannot insert the same preview twice. Closing cancels pending conversion; reopening starts a fresh trial, with exported/downloaded files left intact.
+
+No terminal commands are needed for this app workflow. You still run generation manually in the Colab browser: there is no paid API, direct app upload or always-on backend. If there are no saved voice clips, the screen explains how to create one and still allows importing an existing generated WAV. Actual AI generation and human listening quality remain unverified; the UI tests use synthetic audio.
 
 ## 1. Build the local tool
 

@@ -1,6 +1,6 @@
 # AudioCraft trial status
 
-**Decision: not evaluated. No recommendation to integrate AudioCraft into the app yet.**
+**Decision: not evaluated. The app includes an experimental trial screen at the user's request; production generation integration is not yet recommended.**
 
 ## Automated evidence
 
@@ -19,6 +19,19 @@ python3 experiments/audiocraft/evaluate.py experiments/audiocraft/evaluation-tem
 ```
 
 Local logs are in ignored `build/generation-baseline-build.log`, `build/generation-baseline-tests.log`, `build/generation-test-build.log` and `build/generation-tests.log`, `build/generation-desktop-build.log` and `build/generation-desktop-tests.log`. The blank evaluation sheet correctly reports `not_evaluated` with zero completed cases.
+
+## Desktop trial screen
+
+The subsequent desktop trial screen passed the 29-suite baseline and the expanded 30-suite desktop checks. Native Cocoa checks also exercised the main workspace entry point and the trial dialog, including synthetic WAV conversion, separate previews, cancellation, invalid input, and undoable MIDI insertion. A native screenshot exposed a layout overlap; the dialog now scrolls on shorter windows and the corrected layout was inspected. These are synthetic and UI checks, not human listening results.
+
+Additional commands executed:
+
+```sh
+QT_QPA_PLATFORM=cocoa LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 build/macos-intel/bin/hum_ai_trial_ui_tests --native-screenshot
+QT_QPA_PLATFORM=cocoa LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 build/macos-intel/bin/hum_overdub_ui_tests --native-workspace-check build/ai-trial-count-in.png
+```
+
+Logs: `build/ai-trial-ui-baseline-tests.log`, `build/ai-trial-ui-tests.log`, `build/ai-trial-native-ui.log`, and `build/ai-trial-native-workspace.log`.
 
 ## Not yet executed
 

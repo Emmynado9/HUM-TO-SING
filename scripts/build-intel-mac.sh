@@ -116,6 +116,7 @@ for notice in "$repo_root"/resources/vocal/*.txt; do
     /usr/bin/ditto "$notice" "$staged_app/Contents/Resources/Documentation/Vocal/$(basename "$notice")"
 done
 /usr/bin/ditto "$repo_root/docs/sing-to-midi.md" "$staged_app/Contents/Resources/Documentation/sing-to-midi.md"
+/usr/bin/ditto "$repo_root/experiments/audiocraft/README.md" "$staged_app/Contents/Resources/Documentation/audiocraft-trial.md"
 /usr/bin/ditto "$repo_root/docs/voice-and-lyrics.md" "$staged_app/Contents/Resources/Documentation/voice-and-lyrics.md"
 /usr/bin/ditto "$repo_root/docs/project-files.md" "$staged_app/Contents/Resources/Documentation/project-files.md"
 /usr/bin/ditto "$repo_root/docs/overdub-recording.md" "$staged_app/Contents/Resources/Documentation/overdub-recording.md"

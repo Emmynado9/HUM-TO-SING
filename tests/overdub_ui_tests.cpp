@@ -1,4 +1,5 @@
 #include "MainWindow.hpp"
+#include "AiTrialPanel.hpp"
 #include "PianoRollWidget.hpp"
 #include "PlaylistWidget.hpp"
 #include "ProjectFileStore.hpp"
@@ -216,6 +217,11 @@ int main(int argc, char** argv) {
     };
     edit_voice("Mute voice"); button("saveProjectButton")->click(); saved = hum::app::ProjectFileStore::load(path);
     check(saved && saved.project->voice_clips[0].muted, "voice lane mute is editable and saved");
+    button("openAiTrialButton")->click();
+    auto* ai_trial = dynamic_cast<hum::app::AiTrialPanel*>(window.findChild<QDialog*>("aiTrialPanel"));
+    check(ai_trial && ai_trial->isVisible() && ai_trial->prepareInDirectory(temporary.path()).isEmpty(),
+        "main workspace opens AI Trial with the recorded voice clip");
+    if (ai_trial) ai_trial->reject();
     if (while_playing) {
         window.grab().save("build/voice-playlist.png");
         lyrics_dialog->grab().save("build/lyrics-notepad.png");

@@ -152,6 +152,8 @@ if(HUM_BUILD_GUI)
     endif()
 
     qt_add_executable(hum_to_sing
+        src/app/AiTrialPanel.cpp
+        src/app/AiTrialPanel.hpp
         src/app/RecordingGuidePlayer.cpp
         src/app/vocal/IsolatedMicRecorder.cpp
         src/app/vocal/SingToMidiPanel.cpp
@@ -256,6 +258,21 @@ if(HUM_BUILD_GUI)
         hum_bundle_vocal(hum_overdub_ui_tests)
         add_test(NAME hum_overdub_ui_tests COMMAND hum_overdub_ui_tests)
         set_tests_properties(hum_overdub_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;recording;playback" TIMEOUT 60)
+
+        add_executable(hum_ai_trial_ui_tests tests/ai_trial_ui_tests.cpp
+            src/app/AiTrialPanel.cpp src/app/QtAudioPlayback.cpp src/app/QtMidiPlayback.cpp
+            src/app/vocal/VocalPreviewWidget.cpp src/app/vocal/PianoRollInsertAdapter.cpp)
+        target_include_directories(hum_ai_trial_ui_tests PRIVATE src/app tests)
+        target_link_libraries(hum_ai_trial_ui_tests PRIVATE HumToSing::core hum_vocal
+            Qt6::Widgets Qt6::Test Qt6::Concurrent Qt6::Multimedia)
+        if(APPLE)
+            target_link_libraries(hum_ai_trial_ui_tests PRIVATE hum_mac_instruments "-framework CoreAudio" "-framework AudioToolbox")
+        endif()
+        hum_bundle_vocal(hum_ai_trial_ui_tests)
+        if(HUM_VOCAL_BACKEND_AVAILABLE)
+            add_test(NAME hum_ai_trial_ui_tests COMMAND hum_ai_trial_ui_tests)
+            set_tests_properties(hum_ai_trial_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" LABELS "gui;generation;neural" TIMEOUT 60)
+        endif()
 
         add_executable(hum_sing_to_midi_ui_tests tests/sing_to_midi_ui_tests.cpp
             src/app/RecordingGuidePlayer.cpp
